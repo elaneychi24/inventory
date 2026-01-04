@@ -19,14 +19,15 @@
         .safe-bottom { padding-bottom: var(--sab); }
         @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
         .animate-slide-up { animation: slideUp 0.3s ease-out; }
-        .qr-container img { display: block; margin: 0 auto; }
-        #reader { border: none !important; width: 100% !important; overflow: hidden; border-radius: 24px; }
+        
+        #reader { border: none !important; width: 100% !important; overflow: hidden; border-radius: 24px; transition: all 0.2s ease; }
         #reader video { border-radius: 24px; object-fit: cover; width: 100% !important; }
         
-        /* Custom toggle switch styling */
-        .mode-toggle {
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
+        /* Scan Flash Effects */
+        .flash-in { border: 8px solid #3b82f6 !important; }
+        .flash-out { border: 8px solid #ef4444 !important; }
+
+        .qr-container img { display: block; margin: 0 auto; }
     </style>
 </head>
 <body>
@@ -44,7 +45,7 @@
 
     <script type="module">
         import { initializeApp } from "firebase/app";
-        import { getFirestore, collection, doc, onSnapshot, updateDoc, setDoc, deleteDoc, query } from "firebase/firestore";
+        import { getFirestore, collection, doc, onSnapshot, updateDoc, setDoc, query } from "firebase/firestore";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 
         const manualConfig = {
@@ -67,7 +68,7 @@
 
         window.FirebaseBridge = { 
             db, auth, appId, collection, doc, onSnapshot, 
-            updateDoc, setDoc, deleteDoc, query, 
+            updateDoc, setDoc, query, 
             signInAnonymously, signInWithCustomToken, onAuthStateChanged 
         };
     </script>
@@ -81,13 +82,20 @@
             const [weeklyOut, setWeeklyOut] = useState({});
             const [weeklyRestock, setWeeklyRestock] = useState({});
             const [view, setView] = useState('inventory');
-            const [scanMode, setScanMode] = useState('sold'); // 'sold' or 'restock'
+            const [scanMode, setScanMode] = useState('in'); // 'in' or 'out'
             const [showQRModal, setShowQRModal] = useState(false);
             const [toast, setToast] = useState(null);
             const [loading, setLoading] = useState(true);
+            const [lastScanned, setLastScanned] = useState(null);
+            
             const scannerRef = useRef(null);
+            const scanModeRef = useRef('in');
 
             const fb = window.FirebaseBridge;
+
+            useEffect(() => {
+                scanModeRef.current = scanMode;
+            }, [scanMode]);
 
             useEffect(() => {
                 if (!fb) return;
@@ -99,7 +107,6 @@
                             await fb.signInAnonymously(fb.auth);
                         }
                     } catch (err) {
-                        console.error("Auth failed:", err);
                         setLoading(false);
                     }
                 };
@@ -114,7 +121,6 @@
             useEffect(() => {
                 if (!user || !fb) return;
                 
-                // Inventory
                 const invRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory');
                 const unsubInv = fb.onSnapshot(fb.query(invRef), (snap) => {
                     const d = {}; 
@@ -122,9 +128,8 @@
                     setInventory(d);
                     setLoading(false);
                     setTimeout(() => lucide.createIcons(), 100);
-                }, (err) => setLoading(false));
+                }, () => setLoading(false));
 
-                // Weekly Sales (Out)
                 const movRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyMovements');
                 const unsubMov = fb.onSnapshot(fb.query(movRef), (snap) => {
                     const d = {}; 
@@ -132,7 +137,6 @@
                     setWeeklyOut(d);
                 });
 
-                // Weekly Restocks (In)
                 const resRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyRestocks');
                 const unsubRes = fb.onSnapshot(fb.query(resRef), (snap) => {
                     const d = {}; 
@@ -143,57 +147,32 @@
                 return () => { unsubInv(); unsubMov(); unsubRes(); };
             }, [user]);
 
-            const updateQty = async (id, delta, forceMode = null) => {
+            const updateQty = async (id, delta, explicitMode = null) => {
                 if (!user) return;
                 const item = inventory[id];
                 if (!item) return;
 
-                const activeMode = forceMode || scanMode;
+                const mode = explicitMode || scanModeRef.current;
                 const newQty = Math.max(0, (item.qty || 0) + delta);
                 
                 try {
                     const itemDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', id);
                     await fb.updateDoc(itemDoc, { qty: newQty });
 
-                    if (activeMode === 'sold' && delta < 0) {
+                    if (mode === 'out' && delta < 0) {
                         const movDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyMovements', id);
-                        const currentCount = (weeklyOut[id]?.count || 0) + 1;
+                        const currentCount = (weeklyOut[id]?.count || 0) + Math.abs(delta);
                         await fb.setDoc(movDoc, { count: currentCount, name: item.name }, { merge: true });
-                    } else if (activeMode === 'restock' && delta > 0) {
+                    } else if (mode === 'in' && delta > 0) {
                         const resDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyRestocks', id);
                         const currentCount = (weeklyRestock[id]?.count || 0) + delta;
                         await fb.setDoc(resDoc, { count: currentCount, name: item.name }, { merge: true });
                     }
                     
-                    showToast(`${activeMode === 'restock' ? 'Restocked' : 'Sold'} ${item.name}`);
+                    showToast(`${mode === 'in' ? 'Added' : 'Removed'} ${Math.abs(delta)}x ${item.name}`);
                 } catch (err) {
                     showToast("Sync Error");
                 }
-            };
-
-            const downloadCSV = (type) => {
-                const data = type === 'sold' ? weeklyOut : weeklyRestock;
-                if (Object.keys(data).length === 0) {
-                    showToast("No data to export");
-                    return;
-                }
-                const headers = ["Product ID", "Product Name", type === 'sold' ? "Units Sold" : "Units Restocked"];
-                const rows = Object.entries(data).map(([id, mov]) => [
-                    id,
-                    `"${mov.name.replace(/"/g, '""')}"`,
-                    mov.count
-                ]);
-                
-                const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
-                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement("a");
-                link.setAttribute("href", url);
-                link.setAttribute("download", `DailyByte_${type.toUpperCase()}_${new Date().toISOString().split('T')[0]}.csv`);
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                showToast(`${type.toUpperCase()} Report Downloaded`);
             };
 
             const stopScanner = async () => {
@@ -204,6 +183,26 @@
                     } catch (e) { console.error(e); }
                 }
                 setView('inventory');
+                setLastScanned(null);
+            };
+
+            const triggerFlash = (mode) => {
+                const el = document.getElementById('reader');
+                if (!el) return;
+                const cls = mode === 'in' ? 'flash-in' : 'flash-out';
+                el.classList.add(cls);
+                setTimeout(() => el.classList.remove(cls), 400);
+            };
+
+            const handleBulkInput = () => {
+                if (!lastScanned) return;
+                const amount = prompt(`Bulk Update: How many ${lastScanned.name} are you ${scanMode === 'in' ? 'stocking in' : 'stocking out'}?`, "1");
+                const num = parseInt(amount);
+                if (isNaN(num) || num <= 0) return;
+                
+                const delta = scanMode === 'in' ? num : -num;
+                updateQty(lastScanned.id, delta, scanMode);
+                stopScanner();
             };
 
             const startScanner = () => {
@@ -211,55 +210,78 @@
                 setTimeout(() => {
                     const html5QrCode = new Html5Qrcode("reader");
                     scannerRef.current = html5QrCode;
-                    const config = { fps: 20, qrbox: { width: 250, height: 250 }};
-
+                    
                     html5QrCode.start(
-                        { facingMode: "environment" }, config,
+                        { facingMode: "environment" }, 
+                        { fps: 15, qrbox: { width: 250, height: 250 } },
                         (decodedText) => {
-                            const match = Object.keys(inventory).find(k => k.toLowerCase() === decodedText.toLowerCase().trim());
-                            if (match) {
-                                // delta is -1 if sold, +1 if restock
-                                const delta = scanMode === 'sold' ? -1 : 1;
-                                updateQty(match, delta);
-                                stopScanner();
+                            const matchId = Object.keys(inventory).find(k => k.toLowerCase() === decodedText.toLowerCase().trim());
+                            
+                            if (matchId) {
+                                const currentMode = scanModeRef.current;
+                                triggerFlash(currentMode);
+                                
+                                // Set last scanned for bulk option
+                                setLastScanned({ id: matchId, name: inventory[matchId].name });
+                                
+                                // Default single scan update
+                                const delta = currentMode === 'in' ? 1 : -1;
+                                updateQty(matchId, delta, currentMode);
+                                
+                                if (window.navigator.vibrate) window.navigator.vibrate(100);
                             } else {
                                 showToast(`Unknown QR: ${decodedText}`);
                             }
                         },
                         () => {}
-                    ).catch(() => showToast("Camera Access Denied"));
+                    ).catch(() => showToast("Camera Error"));
                 }, 100);
+            };
+
+            const downloadCSV = (type) => {
+                const data = type === 'in' ? weeklyRestock : weeklyOut;
+                if (Object.keys(data).length === 0) return showToast("No data");
+                
+                const headers = ["ID", "Name", type === 'in' ? "Qty In" : "Qty Out"];
+                const rows = Object.entries(data).map(([id, m]) => [id, `"${m.name}"`, m.count]);
+                const csv = [headers, ...rows].map(e => e.join(",")).join("\n");
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `Byte_${type}_${new Date().toLocaleDateString()}.csv`;
+                a.click();
             };
 
             const addNewItem = async () => {
                 const name = prompt("Product Name:");
                 if (!name) return;
-                const code = prompt("Assign ID:", "QR-" + name.split(' ')[0].toUpperCase() + Math.floor(Math.random()*100));
+                const code = prompt("Assign ID:", "QR-" + name.split(' ')[0].toUpperCase());
                 if (!code) return;
                 try {
                     await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', code), {
                         name, qty: 0, threshold: 5
                     });
-                    showToast(`Created ${name}`);
+                    showToast(`Added ${name}`);
                 } catch (err) { showToast("Error"); }
             };
 
             const showToast = (msg) => {
                 setToast(msg);
-                setTimeout(() => setToast(null), 2000);
+                setTimeout(() => setToast(null), 2500);
             };
 
-            useEffect(() => { lucide.createIcons(); }, [view, scanMode, showQRModal, loading]);
+            useEffect(() => { lucide.createIcons(); }, [view, scanMode, showQRModal, loading, lastScanned]);
 
-            if (loading) return <div className="h-screen flex items-center justify-center"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>;
+            if (loading) return <div className="h-screen flex items-center justify-center bg-slate-50"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>;
 
             return (
-                <div className="max-w-md mx-auto h-screen flex flex-col bg-slate-50 relative overflow-hidden shadow-2xl">
+                <div className="max-w-md mx-auto h-screen flex flex-col bg-slate-50 relative overflow-hidden shadow-2xl text-slate-900">
                     <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top flex justify-between items-center z-50">
                         <div>
                             <h1 className="text-xl font-black italic uppercase tracking-tighter">Byte <span className="text-blue-600">Admin</span></h1>
                             <p className="text-[8px] font-black text-green-500 uppercase tracking-widest flex items-center">
-                                <span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5"></span> LIVE SYNC
+                                <span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5"></span> {view === 'scanner' ? 'SCANNING MODE' : 'LIVE SYNC'}
                             </p>
                         </div>
                         <div className="flex space-x-2">
@@ -277,18 +299,40 @@
                             <div className="bg-white rounded-[32px] p-4 border border-slate-100 animate-slide-up shadow-xl">
                                 <div className="flex bg-slate-100 p-1 rounded-2xl mb-4">
                                     <button 
-                                        onClick={() => setScanMode('sold')}
-                                        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scanMode === 'sold' ? 'bg-white shadow-sm text-red-600' : 'text-slate-400'}`}
-                                    >Sold (-1)</button>
+                                        onClick={() => setScanMode('in')}
+                                        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scanMode === 'in' ? 'bg-white shadow-sm text-blue-600 border border-blue-100' : 'text-slate-400'}`}
+                                    >Stock In (+1)</button>
                                     <button 
-                                        onClick={() => setScanMode('restock')}
-                                        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scanMode === 'restock' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400'}`}
-                                    >Restock (+1)</button>
+                                        onClick={() => setScanMode('out')}
+                                        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scanMode === 'out' ? 'bg-white shadow-sm text-red-600 border border-red-100' : 'text-slate-400'}`}
+                                    >Stock Out (-1)</button>
                                 </div>
-                                <div id="reader"></div>
+                                
+                                <div className="relative">
+                                    <div id="reader"></div>
+                                    <div className="absolute inset-0 pointer-events-none border-2 border-dashed border-white/30 rounded-[24px]"></div>
+                                    
+                                    {lastScanned && (
+                                        <div className="absolute bottom-4 left-4 right-4 animate-slide-up">
+                                            <div className="bg-white/90 backdrop-blur-md p-3 rounded-2xl shadow-xl border border-slate-100 flex justify-between items-center">
+                                                <div className="truncate pr-2">
+                                                    <p className="text-[10px] font-black uppercase text-slate-400">Identified</p>
+                                                    <p className="font-black text-xs truncate uppercase italic">{lastScanned.name}</p>
+                                                </div>
+                                                <button 
+                                                    onClick={handleBulkInput}
+                                                    className="bg-slate-900 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg active:scale-95"
+                                                >
+                                                    Bulk Input
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
                                 <div className="mt-4 text-center">
-                                    <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
-                                        Mode: <span className={scanMode === 'sold' ? 'text-red-500' : 'text-blue-500'}>{scanMode}</span>
+                                    <p className={`text-[10px] font-black uppercase tracking-widest ${scanMode === 'in' ? 'text-blue-500' : 'text-red-500'}`}>
+                                        Active: {scanMode === 'in' ? 'Restocking' : 'Stock Out'} Mode
                                     </p>
                                 </div>
                             </div>
@@ -303,7 +347,7 @@
                                     </button>
                                     <button onClick={addNewItem} className="bg-slate-900 p-5 rounded-[28px] text-white flex flex-col items-center space-y-2 shadow-lg">
                                         <i data-lucide="plus"></i>
-                                        <span className="text-[9px] font-black uppercase tracking-widest">New Item</span>
+                                        <span className="text-[9px] font-black uppercase tracking-widest">Add Item</span>
                                     </button>
                                 </div>
 
@@ -317,9 +361,9 @@
                                                     <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">{id}</p>
                                                 </div>
                                                 <div className="flex items-center space-x-2">
-                                                    <button onClick={() => updateQty(id, -1, 'sold')} className="w-10 h-10 bg-white/50 rounded-xl text-slate-400 font-bold border border-slate-100 shadow-sm">-</button>
-                                                    <span className={`w-6 text-center text-xs font-black ${isLow ? 'text-red-600 animate-pulse' : ''}`}>{item.qty || 0}</span>
-                                                    <button onClick={() => updateQty(id, 1, 'restock')} className="w-10 h-10 bg-slate-900 text-white rounded-xl font-bold shadow-md">+</button>
+                                                    <button onClick={() => updateQty(id, -1, 'out')} className="w-10 h-10 bg-white/50 rounded-xl text-slate-400 font-bold border border-slate-100 shadow-sm">-</button>
+                                                    <span className={`w-8 text-center text-sm font-black ${isLow ? 'text-red-600' : ''}`}>{item.qty || 0}</span>
+                                                    <button onClick={() => updateQty(id, 1, 'in')} className="w-10 h-10 bg-slate-900 text-white rounded-xl font-bold shadow-md">+</button>
                                                 </div>
                                             </div>
                                         );
@@ -330,55 +374,58 @@
 
                         {view === 'audit' && (
                             <div className="space-y-4 animate-slide-up">
-                                <div className="grid grid-cols-1 gap-4">
-                                    <div className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm">
-                                        <div className="flex justify-between items-center mb-4">
-                                            <h3 className="font-black italic uppercase text-sm">Weekly Sales</h3>
-                                            <button onClick={() => downloadCSV('sold')} className="text-red-600 bg-red-50 p-2 rounded-xl"><i data-lucide="download" className="w-4 h-4"></i></button>
-                                        </div>
-                                        <div className="space-y-2 max-h-48 overflow-y-auto">
-                                            {Object.entries(weeklyOut).length === 0 ? <p className="text-[10px] text-slate-300 uppercase text-center py-4">No Sales</p> : 
-                                                Object.entries(weeklyOut).map(([id, m]) => (
-                                                    <div key={id} className="flex justify-between text-[10px] font-bold py-1 border-b border-slate-50">
-                                                        <span className="truncate pr-4 uppercase">{m.name}</span>
-                                                        <span className="text-red-500">-{m.count}</span>
-                                                    </div>
-                                                ))
-                                            }
-                                        </div>
+                                <div className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="font-black italic uppercase text-sm text-red-600">Stock Out (Weekly)</h3>
+                                        <button onClick={() => downloadCSV('out')} className="text-red-600 bg-red-50 p-2 rounded-xl"><i data-lucide="download" className="w-4 h-4"></i></button>
                                     </div>
+                                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                                        {Object.entries(weeklyOut).length === 0 ? <p className="text-[10px] text-slate-300 uppercase py-2">No Sales</p> : 
+                                            Object.entries(weeklyOut).map(([id, m]) => (
+                                                <div key={id} className="flex justify-between text-[10px] font-bold py-1 border-b border-slate-50">
+                                                    <span className="truncate pr-4 uppercase">{m.name}</span>
+                                                    <span className="text-red-500">-{m.count}</span>
+                                                </div>
+                                            ))
+                                        }
+                                    </div>
+                                </div>
 
-                                    <div className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm">
-                                        <div className="flex justify-between items-center mb-4">
-                                            <h3 className="font-black italic uppercase text-sm">Weekly Restocks</h3>
-                                            <button onClick={() => downloadCSV('restock')} className="text-blue-600 bg-blue-50 p-2 rounded-xl"><i data-lucide="download" className="w-4 h-4"></i></button>
-                                        </div>
-                                        <div className="space-y-2 max-h-48 overflow-y-auto">
-                                            {Object.entries(weeklyRestock).length === 0 ? <p className="text-[10px] text-slate-300 uppercase text-center py-4">No Restocks</p> : 
-                                                Object.entries(weeklyRestock).map(([id, m]) => (
-                                                    <div key={id} className="flex justify-between text-[10px] font-bold py-1 border-b border-slate-50">
-                                                        <span className="truncate pr-4 uppercase">{m.name}</span>
-                                                        <span className="text-blue-500">+{m.count}</span>
-                                                    </div>
-                                                ))
-                                            }
-                                        </div>
+                                <div className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="font-black italic uppercase text-sm text-blue-600">Stock In (Weekly)</h3>
+                                        <button onClick={() => downloadCSV('in')} className="text-blue-600 bg-blue-50 p-2 rounded-xl"><i data-lucide="download" className="w-4 h-4"></i></button>
+                                    </div>
+                                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                                        {Object.entries(weeklyRestock).length === 0 ? <p className="text-[10px] text-slate-300 uppercase py-2">No Restocks</p> : 
+                                            Object.entries(weeklyRestock).map(([id, m]) => (
+                                                <div key={id} className="flex justify-between text-[10px] font-bold py-1 border-b border-slate-50">
+                                                    <span className="truncate pr-4 uppercase">{m.name}</span>
+                                                    <span className="text-blue-500">+{m.count}</span>
+                                                </div>
+                                            ))
+                                        }
                                     </div>
                                 </div>
                             </div>
                         )}
                     </main>
 
-                    {toast && <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl z-[60]">{toast}</div>}
+                    {toast && (
+                        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl z-[60] flex items-center">
+                            <i data-lucide="check-circle" className="w-3 h-3 mr-2 text-green-400"></i>
+                            {toast}
+                        </div>
+                    )}
 
                     {showQRModal && (
-                        <div className="fixed inset-0 bg-black/80 z-[100] flex flex-col p-6 overflow-y-auto backdrop-blur-sm">
-                            <div className="bg-white rounded-[40px] p-6 w-full max-w-sm mx-auto my-auto shadow-2xl">
+                        <div className="fixed inset-0 bg-black/90 z-[100] flex flex-col p-6 overflow-y-auto backdrop-blur-md">
+                            <div className="bg-white rounded-[40px] p-8 w-full max-w-sm mx-auto my-auto shadow-2xl">
                                 <div className="flex justify-between items-center mb-6">
-                                    <h2 className="font-black uppercase italic">Print Stickers</h2>
-                                    <button onClick={() => setShowQRModal(false)} className="text-slate-400 text-xl">✕</button>
+                                    <h2 className="font-black uppercase italic tracking-tighter">QR Sheet Generator</h2>
+                                    <button onClick={() => setShowQRModal(false)} className="bg-slate-100 p-2 rounded-full text-slate-400">✕</button>
                                 </div>
-                                <div className="grid grid-cols-2 gap-4 mb-8">
+                                <div className="grid grid-cols-2 gap-4 mb-8 overflow-y-auto max-h-[50vh] p-1">
                                     {Object.entries(inventory).map(([id, item]) => (
                                         <div key={id} className="flex flex-col items-center p-4 border border-slate-100 rounded-[24px] bg-slate-50 qr-container">
                                             <img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${id}`} className="w-20 h-20 mb-2 rounded-lg" />
@@ -386,7 +433,7 @@
                                         </div>
                                     ))}
                                 </div>
-                                <button onClick={() => window.print()} className="w-full bg-blue-600 text-white py-5 rounded-[24px] font-black uppercase text-xs tracking-widest">Print Layout</button>
+                                <button onClick={() => window.print()} className="w-full bg-blue-600 text-white py-5 rounded-[24px] font-black uppercase text-xs tracking-widest shadow-xl shadow-blue-200">Print All Stickers</button>
                             </div>
                         </div>
                     )}
