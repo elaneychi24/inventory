@@ -21,11 +21,7 @@
         .safe-bottom { padding-bottom: var(--sab); }
         @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
         .animate-slide-up { animation: slideUp 0.3s ease-out; }
-        
-        .qr-container img {
-            display: block;
-            margin: 0 auto;
-        }
+        .qr-container img { display: block; margin: 0 auto; }
     </style>
 </head>
 <body>
@@ -47,18 +43,36 @@
         import { getFirestore, collection, doc, onSnapshot, updateDoc, setDoc, deleteDoc, query } from "firebase/firestore";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 
-        // Configuration
-        const firebaseConfig = JSON.parse(__firebase_config);
+        /** * AUTHENTICATION SETUP 
+         * If running on GitHub/Local, fill in your Firebase Config here.
+         * If running in the AI Preview, it will use the environment variables.
+         */
+        const manualConfig = {
+            apiKey: "AIzaSyBqEfCfi0PrF4cQ5qKI5ceJKkBnfmEaLoQ",
+            authDomain: "the-daily-byte-inventory.firebaseapp.com",
+            projectId: "the-daily-byte-inventory",
+            storageBucket: "the-daily-byte-inventory.firebasestorage.app",
+            messagingSenderId: "215481738266",
+            appId: "1:215481738266:web:3b2a624f0e4f454304dda3"
+        };
+
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : manualConfig;
+
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'daily-byte-v1';
 
-        // Expose Firebase to window for React component
-        window.FirebaseBridge = { db, auth, appId, collection, doc, onSnapshot, updateDoc, setDoc, deleteDoc, query, signInAnonymously, signInWithCustomToken, onAuthStateChanged };
+        // Bridge to React
+        window.FirebaseBridge = { 
+            db, auth, appId, collection, doc, onSnapshot, 
+            updateDoc, setDoc, deleteDoc, query, 
+            signInAnonymously, signInWithCustomToken, onAuthStateChanged 
+        };
     </script>
 
-    <!-- React App using Babel to handle JSX -->
     <script type="text/babel">
         const { useState, useEffect } = React;
 
@@ -78,23 +92,30 @@
                 if (!fb) return;
                 const initAuth = async () => {
                     try {
+                        // Priority 1: Custom Token from environment
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
                         } else {
+                            // Priority 2: Anonymous Sign-in (Works for GitHub/Local)
                             await fb.signInAnonymously(fb.auth);
                         }
                     } catch (err) {
                         console.error("Auth failed:", err);
+                        setLoading(false);
                     }
                 };
                 initAuth();
-                const unsubscribe = fb.onAuthStateChanged(fb.auth, setUser);
+                const unsubscribe = fb.onAuthStateChanged(fb.auth, (u) => {
+                    setUser(u);
+                    if (!u) setLoading(false); // Stop loop if auth fails
+                });
                 return () => unsubscribe();
             }, []);
 
             useEffect(() => {
                 if (!user || !fb) return;
                 
+                // Public data path (Rule 1)
                 const invRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory');
                 const unsubInv = fb.onSnapshot(fb.query(invRef), (snap) => {
                     const d = {}; 
@@ -103,7 +124,7 @@
                     setLoading(false);
                     setTimeout(() => lucide.createIcons(), 100);
                 }, (err) => {
-                    console.error("Inventory Sync Error:", err);
+                    console.error("Firestore Sync Error (Check Rules):", err);
                     setLoading(false);
                 });
 
@@ -118,21 +139,21 @@
             }, [user]);
 
             const updateQty = async (id, delta) => {
+                if (!user) return;
                 const item = inventory[id];
                 const newQty = Math.max(0, item.qty + delta);
-                
                 try {
                     const itemDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', id);
                     await fb.updateDoc(itemDoc, { qty: newQty });
 
                     if (delta < 0) {
                         const movDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyMovements', id);
-                        const currentCount = weeklyOut[id]?.count || 0;
-                        await fb.setDoc(movDoc, { count: currentCount + 1, name: item.name }, { merge: true });
+                        const currentCount = (weeklyOut[id]?.count || 0) + 1;
+                        await fb.setDoc(movDoc, { count: currentCount, name: item.name }, { merge: true });
                     }
-                    showToast(`${delta > 0 ? 'Added' : 'Removed'} ${item.name}`);
+                    showToast(`${delta > 0 ? 'Added' : 'Sold'} ${item.name}`);
                 } catch (err) {
-                    showToast("Error updating cloud");
+                    showToast("Permission Denied");
                 }
             };
 
@@ -141,7 +162,6 @@
                 if (!name) return;
                 const code = prompt("Assign ID:", "QR-" + name.split(' ')[0].toUpperCase());
                 if (!code) return;
-                
                 try {
                     await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', code), {
                         name, qty: 0, threshold: 2
@@ -157,31 +177,29 @@
                 setTimeout(() => setToast(null), 2000);
             };
 
-            useEffect(() => {
-                lucide.createIcons();
-            }, [view, showQRModal, loading]);
+            useEffect(() => { lucide.createIcons(); }, [view, showQRModal, loading]);
 
             if (loading) {
                 return (
                     <div className="h-screen flex flex-col items-center justify-center space-y-4 bg-slate-50">
                         <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                        <p className="font-black uppercase tracking-widest text-[10px] text-slate-400">Connecting...</p>
+                        <p className="font-black uppercase tracking-widest text-[10px] text-slate-400">Authenticating Cloud...</p>
                     </div>
                 );
             }
 
             return (
                 <div className="max-w-md mx-auto h-screen flex flex-col bg-slate-50 relative overflow-hidden shadow-2xl">
-                    <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top sticky top-0 z-40">
+                    <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top">
                         <div className="flex justify-between items-center">
                             <div>
                                 <h1 className="text-xl font-black italic uppercase tracking-tighter">The Daily <span className="text-blue-600">Byte</span></h1>
                                 <p className="text-[8px] font-black text-green-500 uppercase tracking-[0.2em] flex items-center">
-                                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5 animate-pulse"></span> Cloud Live
+                                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5 animate-pulse"></span> {user ? 'Live Sync' : 'Offline'}
                                 </p>
                             </div>
                             <button onClick={() => setView(view === 'inventory' ? 'audit' : 'inventory')} className="p-3 bg-slate-50 rounded-2xl text-slate-400">
-                                {view === 'inventory' ? <i data-lucide="clipboard-list" className="w-5 h-5"></i> : <i data-lucide="layout-grid" className="w-5 h-5"></i>}
+                                {view === 'inventory' ? <i data-lucide="clipboard-list"></i> : <i data-lucide="layout-grid"></i>}
                             </button>
                         </div>
                     </header>
@@ -189,11 +207,6 @@
                     <main className="flex-1 overflow-y-auto p-4 pb-32">
                         {view === 'inventory' ? (
                             <div className="space-y-4">
-                                <div className="flex bg-slate-200/50 p-1 rounded-2xl">
-                                    <button onClick={() => setMode('in')} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${mode === 'in' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}>Restock</button>
-                                    <button onClick={() => setMode('out')} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${mode === 'out' ? 'bg-white shadow-sm text-red-600' : 'text-slate-500'}`}>Sold</button>
-                                </div>
-
                                 <div className="grid grid-cols-2 gap-3">
                                     <button onClick={() => setShowQRModal(true)} className="bg-white p-5 rounded-[28px] border border-slate-100 flex flex-col items-center space-y-2 shadow-sm">
                                         <i data-lucide="qr-code" className="text-blue-600"></i>
@@ -224,26 +237,20 @@
                         ) : (
                             <div className="space-y-4">
                                 <div className="bg-slate-900 text-white p-6 rounded-[32px] shadow-xl">
-                                    <h3 className="font-black italic uppercase text-lg">Weekly Sales</h3>
-                                    <p className="text-[9px] text-slate-400 uppercase tracking-widest">Global Audit</p>
+                                    <h3 className="font-black italic uppercase text-lg">Weekly Audit</h3>
+                                    <p className="text-[9px] text-slate-400 uppercase tracking-widest">Global Sales Track</p>
                                 </div>
                                 {Object.entries(weeklyOut).map(([id, mov]) => (
                                     <div key={id} className="bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center">
                                         <p className="font-black text-[10px] uppercase truncate flex-1">{mov.name}</p>
-                                        <div className="flex items-center space-x-3">
-                                            <p className="text-xs font-black text-blue-600">{mov.count} SOLD</p>
-                                        </div>
+                                        <p className="text-xs font-black text-blue-600">{mov.count} SOLD</p>
                                     </div>
                                 ))}
                             </div>
                         )}
                     </main>
 
-                    {toast && (
-                        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl animate-slide-up z-[60]">
-                            {toast}
-                        </div>
-                    )}
+                    {toast && <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl animate-slide-up z-[60]">{toast}</div>}
 
                     {showQRModal && (
                         <div className="fixed inset-0 bg-black/80 z-[100] flex flex-col p-6 overflow-y-auto backdrop-blur-sm">
@@ -256,7 +263,7 @@
                                     {Object.entries(inventory).map(([id, item]) => (
                                         <div key={id} className="flex flex-col items-center p-4 border border-slate-100 rounded-[24px] bg-slate-50 qr-container">
                                             <img src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${id}`} className="w-16 h-16 mb-2 rounded-lg" />
-                                            <p className="text-[7px] font-black uppercase truncate w-full text-center tracking-tight">{item.name}</p>
+                                            <p className="text-[7px] font-black uppercase truncate w-full text-center">{item.name}</p>
                                         </div>
                                     ))}
                                 </div>
