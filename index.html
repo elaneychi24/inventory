@@ -1,400 +1,275 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  onSnapshot, 
-  updateDoc, 
-  setDoc, 
-  deleteDoc,
-  query
-} from 'firebase/firestore';
-import { 
-  getAuth, 
-  signInWithCustomToken, 
-  signInAnonymously, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  QrCode, 
-  Plus, 
-  Minus, 
-  Scan, 
-  ClipboardList, 
-  Send, 
-  Trash2, 
-  PackagePlus,
-  ArrowRightLeft,
-  X,
-  Printer,
-  Cloud
-} from 'lucide-react';
-
-// --- Firebase Configuration ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'daily-byte-v1';
-
-const App = () => {
-  const [user, setUser] = useState(null);
-  const [inventory, setInventory] = useState({});
-  const [weeklyOut, setWeeklyOut] = useState({});
-  const [mode, setMode] = useState('in'); // 'in' or 'out'
-  const [view, setView] = useState('inventory'); // 'inventory' or 'audit'
-  const [showQRModal, setShowQRModal] = useState(false);
-  const [toast, setToast] = useState(null);
-  const [isSyncing, setIsSyncing] = useState(true);
-
-  // --- 1. Auth Initialization ---
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) {
-        console.error("Auth Error:", err);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
-
-  // --- 2. Live Data Sync ---
-  useEffect(() => {
-    if (!user) return;
-
-    // Listen for Inventory changes
-    const invRef = collection(db, 'artifacts', appId, 'public', 'data', 'inventory');
-    const qInv = query(invRef);
-    const unsubInv = onSnapshot(qInv, (snapshot) => {
-      const data = {};
-      snapshot.forEach(doc => { data[doc.id] = doc.data(); });
-      setInventory(data);
-      setIsSyncing(false);
-    }, (err) => {
-      console.error("Firestore Inv Error:", err);
-      setIsSyncing(false);
-    });
-
-    // Listen for Weekly Movements
-    const movementRef = collection(db, 'artifacts', appId, 'public', 'data', 'weeklyMovements');
-    const qMov = query(movementRef);
-    const unsubMov = onSnapshot(qMov, (snapshot) => {
-      const data = {};
-      snapshot.forEach(doc => { data[doc.id] = doc.data(); });
-      setWeeklyOut(data);
-    }, (err) => console.error("Firestore Mov Error:", err));
-
-    return () => {
-      unsubInv();
-      unsubMov();
-    };
-  }, [user]);
-
-  // --- 3. Actions ---
-  const showToastMsg = (msg) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2000);
-  };
-
-  const updateQty = async (id, delta) => {
-    if (!user || !inventory[id]) return;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0, viewport-fit=cover">
+    <title>The Daily Byte | Cloud Sync</title>
     
-    const item = inventory[id];
-    let newQty = item.qty + delta;
-    if (newQty < 0) newQty = 0;
+    <!-- Styling & Icons -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- React & Babel CDNs -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    try {
-      // Update Main Inventory
-      const itemDoc = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', id);
-      await updateDoc(itemDoc, { qty: newQty });
+    <style>
+        :root { --sat: env(safe-area-inset-top); --sab: env(safe-area-inset-bottom); }
+        body { background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; }
+        .safe-top { padding-top: var(--sat); }
+        .safe-bottom { padding-bottom: var(--sab); }
+        @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+        .animate-slide-up { animation: slideUp 0.3s ease-out; }
+        
+        .qr-container img {
+            display: block;
+            margin: 0 auto;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-      // If selling/moving out, track in movements
-      if (delta < 0) {
-        const movDoc = doc(db, 'artifacts', appId, 'public', 'data', 'weeklyMovements', id);
-        const currentMov = weeklyOut[id]?.count || 0;
-        await setDoc(movDoc, { 
-          count: currentMov + Math.abs(delta),
-          name: item.name 
-        }, { merge: true });
+    <!-- Firebase SDKs -->
+    <script type="importmap">
+    {
+      "imports": {
+        "firebase/app": "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js"
       }
-
-      showToastMsg(`${delta > 0 ? '+' : '-'} ${item.name}`);
-    } catch (err) {
-      showToastMsg("Sync Error");
     }
-  };
+    </script>
 
-  const addNewItem = async () => {
-    const name = prompt("Product Name (e.g. Poppi Strawberry):");
-    if (!name) return;
-    const code = prompt("Assign QR Code ID (e.g. QR-POPPI):", "QR-" + name.split(' ')[0].toUpperCase());
-    if (!code) return;
+    <script type="module">
+        import { initializeApp } from "firebase/app";
+        import { getFirestore, collection, doc, onSnapshot, updateDoc, setDoc, deleteDoc, query } from "firebase/firestore";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 
-    try {
-      const itemDoc = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', code);
-      await setDoc(itemDoc, {
-        name: name,
-        qty: 0,
-        threshold: 2,
-        createdAt: new Date().toISOString()
-      });
-      showToastMsg(`Added ${name}`);
-    } catch (err) {
-      showToastMsg("Error adding product");
-    }
-  };
+        // Configuration
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'daily-byte-v1';
 
-  const sendReport = () => {
-    const date = new Date().toLocaleDateString();
-    let body = `BYTE CLOUD REPORT: ${date}\n\nSALES:\n`;
-    Object.keys(weeklyOut).forEach(id => {
-      if (weeklyOut[id].count > 0) body += `- ${weeklyOut[id].name}: ${weeklyOut[id].count}\n`;
-    });
-    body += `\nCURRENT STOCK:\n`;
-    Object.keys(inventory).forEach(id => {
-      body += `- ${inventory[id].name}: ${inventory[id].qty}\n`;
-    });
-    window.location.href = `mailto:elaney.tedder@gmail.com?subject=Byte Report ${date}&body=${encodeURIComponent(body)}`;
-  };
+        // Expose Firebase to window for React component
+        window.FirebaseBridge = { db, auth, appId, collection, doc, onSnapshot, updateDoc, setDoc, deleteDoc, query, signInAnonymously, signInWithCustomToken, onAuthStateChanged };
+    </script>
 
-  // --- 4. Sub-Components ---
-  const QRSheet = () => (
-    <div className="grid grid-cols-2 gap-4">
-      {Object.keys(inventory).map(id => (
-        <div key={id} className="flex flex-col items-center p-3 border border-slate-100 rounded-xl bg-slate-50">
-          <img 
-            src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${id}`} 
-            alt={id}
-            className="w-24 h-24 mb-2"
-          />
-          <p className="text-[8px] font-black uppercase text-center truncate w-full">{inventory[id].name}</p>
-          <p className="text-[6px] text-slate-400 font-bold">{id}</p>
-        </div>
-      ))}
-    </div>
-  );
+    <!-- React App using Babel to handle JSX -->
+    <script type="text/babel">
+        const { useState, useEffect } = React;
 
-  return (
-    <div className="flex flex-col h-screen bg-slate-50 overflow-hidden font-sans">
-      {/* Toast */}
-      {toast && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[300] bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest animate-bounce">
-          {toast}
-        </div>
-      )}
+        function App() {
+            const [user, setUser] = useState(null);
+            const [inventory, setInventory] = useState({});
+            const [weeklyOut, setWeeklyOut] = useState({});
+            const [mode, setMode] = useState('in');
+            const [view, setView] = useState('inventory');
+            const [showQRModal, setShowQRModal] = useState(false);
+            const [toast, setToast] = useState(null);
+            const [loading, setLoading] = useState(true);
 
-      {/* QR/Sync Modal */}
-      {showQRModal && (
-        <div className="fixed inset-0 bg-black/80 z-[250] flex items-center justify-center p-6 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-md rounded-[32px] p-6 max-h-[85vh] overflow-y-auto flex flex-col shadow-2xl">
-            <div className="flex justify-between items-center mb-6 sticky top-0 bg-white py-2 z-10">
-              <div>
-                <h2 className="font-black uppercase italic text-lg leading-tight">Cloud Hub</h2>
-                <div className="flex items-center text-[8px] text-green-500 font-black uppercase tracking-widest mt-1">
-                  <Cloud size={10} className="mr-1" /> All devices synced
-                </div>
-              </div>
-              <button onClick={() => setShowQRModal(false)} className="p-2 text-slate-400 hover:text-slate-900">
-                <X size={24} />
-              </button>
-            </div>
+            const fb = window.FirebaseBridge;
 
-            <div className="flex-1 space-y-8">
-              <section>
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400">QR Sticker Sheet</h3>
-                  <button onClick={() => window.print()} className="flex items-center text-[9px] font-black uppercase text-blue-600">
-                    <Printer size={12} className="mr-1" /> Print
-                  </button>
-                </div>
-                <QRSheet />
-              </section>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))]">
-        <div className="max-w-xl mx-auto flex justify-between items-center">
-          <div>
-            <h1 className="text-xl font-black tracking-tighter uppercase italic">The Daily <span className="text-blue-600">Byte</span></h1>
-            <div className="flex items-center space-x-2 mt-1">
-              <span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-amber-400 animate-pulse' : 'bg-green-500'}`}></span>
-              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">
-                {isSyncing ? 'Syncing Cloud...' : 'Cloud Connected'}
-              </p>
-            </div>
-          </div>
-          <button 
-            onClick={() => setView(view === 'inventory' ? 'audit' : 'inventory')}
-            className="bg-slate-100 p-2.5 rounded-full text-slate-600"
-          >
-            {view === 'inventory' ? <ClipboardList size={20} /> : <ArrowRightLeft size={20} />}
-          </button>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto px-4 py-6 pb-32">
-        <div className="max-w-xl mx-auto space-y-6">
-          
-          {view === 'inventory' ? (
-            <>
-              {/* Mode Switcher */}
-              <div className="flex bg-slate-200/50 p-1 rounded-2xl">
-                <button 
-                  onClick={() => setMode('in')}
-                  className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${mode === 'in' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}
-                >
-                  Restock
-                </button>
-                <button 
-                  onClick={() => setMode('out')}
-                  className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${mode === 'out' ? 'bg-white shadow-sm text-red-600' : 'text-slate-500'}`}
-                >
-                  Sell/Move
-                </button>
-              </div>
-
-              {/* Action Cards */}
-              <div className="grid grid-cols-2 gap-3">
-                <button 
-                  onClick={() => setShowQRModal(true)}
-                  className="bg-white p-5 rounded-[28px] border border-slate-100 shadow-sm flex flex-col items-center space-y-3 active:scale-95 transition-transform"
-                >
-                  <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
-                    <QrCode size={24} />
-                  </div>
-                  <span className="text-[10px] font-black uppercase tracking-tight">QR Stickers</span>
-                </button>
-                
-                <button 
-                  onClick={() => {
-                    const id = prompt("Scan/Type Code:");
-                    if(id) {
-                      if(!inventory[id.toUpperCase()]) {
-                        if(confirm("New item? Add to cloud?")) processQR(id.toUpperCase());
-                      } else {
-                        updateQty(id.toUpperCase(), mode === 'in' ? 1 : -1);
-                      }
+            useEffect(() => {
+                if (!fb) return;
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
+                        } else {
+                            await fb.signInAnonymously(fb.auth);
+                        }
+                    } catch (err) {
+                        console.error("Auth failed:", err);
                     }
-                  }}
-                  className="bg-slate-900 p-5 rounded-[28px] text-white shadow-lg flex flex-col items-center space-y-3 active:scale-95 transition-transform"
-                >
-                  <div className="p-3 bg-white/10 text-white rounded-2xl">
-                    <Scan size={24} />
-                  </div>
-                  <span className="text-[10px] font-black uppercase tracking-tight">Scan Item</span>
-                </button>
-              </div>
+                };
+                initAuth();
+                const unsubscribe = fb.onAuthStateChanged(fb.auth, setUser);
+                return () => unsubscribe();
+            }, []);
 
-              {/* List Header */}
-              <div className="flex justify-between items-center px-2 mt-4">
-                <h3 className="font-black text-slate-400 text-[9px] uppercase tracking-widest">Live Inventory</h3>
-                <button 
-                  onClick={addNewItem}
-                  className="flex items-center text-[9px] font-black uppercase text-blue-600"
-                >
-                  <Plus size={12} className="mr-1" /> New Product
-                </button>
-              </div>
+            useEffect(() => {
+                if (!user || !fb) return;
+                
+                const invRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory');
+                const unsubInv = fb.onSnapshot(fb.query(invRef), (snap) => {
+                    const d = {}; 
+                    snap.forEach(doc => d[doc.id] = doc.data());
+                    setInventory(d);
+                    setLoading(false);
+                    setTimeout(() => lucide.createIcons(), 100);
+                }, (err) => {
+                    console.error("Inventory Sync Error:", err);
+                    setLoading(false);
+                });
 
-              {/* Inventory List */}
-              <div className="space-y-2">
-                {Object.keys(inventory).length === 0 ? (
-                  <div className="py-20 text-center opacity-20">
-                    <PackagePlus size={48} className="mx-auto mb-2" />
-                    <p className="text-xs font-bold uppercase italic">No items found</p>
-                  </div>
-                ) : (
-                  Object.keys(inventory).sort().map(id => {
-                    const item = inventory[id];
-                    const isLow = item.qty <= (item.threshold || 2);
-                    return (
-                      <div key={id} className={`bg-white p-4 rounded-2xl border transition-colors flex justify-between items-center ${isLow ? 'border-red-100 bg-red-50/20' : 'border-slate-100'}`}>
-                        <div className="truncate pr-2">
-                          <p className="font-black text-[11px] uppercase truncate">{item.name}</p>
-                          <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{id}</p>
+                const movRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyMovements');
+                const unsubMov = fb.onSnapshot(fb.query(movRef), (snap) => {
+                    const d = {}; 
+                    snap.forEach(doc => d[doc.id] = doc.data());
+                    setWeeklyOut(d);
+                }, (err) => console.error("Movement Sync Error:", err));
+
+                return () => { unsubInv(); unsubMov(); };
+            }, [user]);
+
+            const updateQty = async (id, delta) => {
+                const item = inventory[id];
+                const newQty = Math.max(0, item.qty + delta);
+                
+                try {
+                    const itemDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', id);
+                    await fb.updateDoc(itemDoc, { qty: newQty });
+
+                    if (delta < 0) {
+                        const movDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyMovements', id);
+                        const currentCount = weeklyOut[id]?.count || 0;
+                        await fb.setDoc(movDoc, { count: currentCount + 1, name: item.name }, { merge: true });
+                    }
+                    showToast(`${delta > 0 ? 'Added' : 'Removed'} ${item.name}`);
+                } catch (err) {
+                    showToast("Error updating cloud");
+                }
+            };
+
+            const addNewItem = async () => {
+                const name = prompt("Product Name:");
+                if (!name) return;
+                const code = prompt("Assign ID:", "QR-" + name.split(' ')[0].toUpperCase());
+                if (!code) return;
+                
+                try {
+                    await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', code), {
+                        name, qty: 0, threshold: 2
+                    });
+                    showToast(`Created ${name}`);
+                } catch (err) {
+                    showToast("Error creating item");
+                }
+            };
+
+            const showToast = (msg) => {
+                setToast(msg);
+                setTimeout(() => setToast(null), 2000);
+            };
+
+            useEffect(() => {
+                lucide.createIcons();
+            }, [view, showQRModal, loading]);
+
+            if (loading) {
+                return (
+                    <div className="h-screen flex flex-col items-center justify-center space-y-4 bg-slate-50">
+                        <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                        <p className="font-black uppercase tracking-widest text-[10px] text-slate-400">Connecting...</p>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="max-w-md mx-auto h-screen flex flex-col bg-slate-50 relative overflow-hidden shadow-2xl">
+                    <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top sticky top-0 z-40">
+                        <div className="flex justify-between items-center">
+                            <div>
+                                <h1 className="text-xl font-black italic uppercase tracking-tighter">The Daily <span className="text-blue-600">Byte</span></h1>
+                                <p className="text-[8px] font-black text-green-500 uppercase tracking-[0.2em] flex items-center">
+                                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5 animate-pulse"></span> Cloud Live
+                                </p>
+                            </div>
+                            <button onClick={() => setView(view === 'inventory' ? 'audit' : 'inventory')} className="p-3 bg-slate-50 rounded-2xl text-slate-400">
+                                {view === 'inventory' ? <i data-lucide="clipboard-list" className="w-5 h-5"></i> : <i data-lucide="layout-grid" className="w-5 h-5"></i>}
+                            </button>
                         </div>
-                        <div className="flex items-center space-x-2">
-                          <button onClick={() => updateQty(id, -1)} className="w-10 h-10 bg-slate-50 rounded-xl font-bold text-slate-400 hover:bg-slate-100">-</button>
-                          <span className={`text-xs font-black w-7 text-center ${isLow ? 'text-red-500' : ''}`}>{item.qty}</span>
-                          <button onClick={() => updateQty(id, 1)} className="w-10 h-10 bg-slate-900 rounded-xl font-bold text-white shadow-md active:scale-90 transition-transform">+</button>
+                    </header>
+
+                    <main className="flex-1 overflow-y-auto p-4 pb-32">
+                        {view === 'inventory' ? (
+                            <div className="space-y-4">
+                                <div className="flex bg-slate-200/50 p-1 rounded-2xl">
+                                    <button onClick={() => setMode('in')} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${mode === 'in' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}>Restock</button>
+                                    <button onClick={() => setMode('out')} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${mode === 'out' ? 'bg-white shadow-sm text-red-600' : 'text-slate-500'}`}>Sold</button>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button onClick={() => setShowQRModal(true)} className="bg-white p-5 rounded-[28px] border border-slate-100 flex flex-col items-center space-y-2 shadow-sm">
+                                        <i data-lucide="qr-code" className="text-blue-600"></i>
+                                        <span className="text-[9px] font-black uppercase">Stickers</span>
+                                    </button>
+                                    <button onClick={addNewItem} className="bg-slate-900 p-5 rounded-[28px] text-white flex flex-col items-center space-y-2 shadow-lg">
+                                        <i data-lucide="plus" className="text-white"></i>
+                                        <span className="text-[9px] font-black uppercase">New Item</span>
+                                    </button>
+                                </div>
+
+                                <div className="space-y-2">
+                                    {Object.entries(inventory).sort().map(([id, item]) => (
+                                        <div key={id} className="bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center">
+                                            <div className="flex-1 min-w-0 pr-4">
+                                                <p className="font-black text-[11px] uppercase tracking-tight truncate">{item.name}</p>
+                                                <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">{id}</p>
+                                            </div>
+                                            <div className="flex items-center space-x-2">
+                                                <button onClick={() => updateQty(id, -1)} className="w-10 h-10 bg-slate-50 rounded-xl text-slate-400 font-bold">-</button>
+                                                <span className="w-6 text-center text-xs font-black">{item.qty}</span>
+                                                <button onClick={() => updateQty(id, 1)} className="w-10 h-10 bg-slate-900 text-white rounded-xl font-bold">+</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="bg-slate-900 text-white p-6 rounded-[32px] shadow-xl">
+                                    <h3 className="font-black italic uppercase text-lg">Weekly Sales</h3>
+                                    <p className="text-[9px] text-slate-400 uppercase tracking-widest">Global Audit</p>
+                                </div>
+                                {Object.entries(weeklyOut).map(([id, mov]) => (
+                                    <div key={id} className="bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center">
+                                        <p className="font-black text-[10px] uppercase truncate flex-1">{mov.name}</p>
+                                        <div className="flex items-center space-x-3">
+                                            <p className="text-xs font-black text-blue-600">{mov.count} SOLD</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </main>
+
+                    {toast && (
+                        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl animate-slide-up z-[60]">
+                            {toast}
                         </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </>
-          ) : (
-            <>
-              {/* Audit View */}
-              <div className="bg-slate-900 p-6 rounded-[32px] text-white shadow-xl relative overflow-hidden">
-                <div className="relative z-10">
-                  <h3 className="font-black uppercase italic text-xl">Weekly Movements</h3>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Real-time data from all devices</p>
+                    )}
+
+                    {showQRModal && (
+                        <div className="fixed inset-0 bg-black/80 z-[100] flex flex-col p-6 overflow-y-auto backdrop-blur-sm">
+                            <div className="bg-white rounded-[40px] p-6 w-full max-w-sm mx-auto my-auto shadow-2xl">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h2 className="font-black uppercase italic">QR Stickers</h2>
+                                    <button onClick={() => setShowQRModal(false)} className="text-slate-400">✕</button>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4 mb-8">
+                                    {Object.entries(inventory).map(([id, item]) => (
+                                        <div key={id} className="flex flex-col items-center p-4 border border-slate-100 rounded-[24px] bg-slate-50 qr-container">
+                                            <img src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${id}`} className="w-16 h-16 mb-2 rounded-lg" />
+                                            <p className="text-[7px] font-black uppercase truncate w-full text-center tracking-tight">{item.name}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                                <button onClick={() => window.print()} className="w-full bg-blue-600 text-white py-5 rounded-[24px] font-black uppercase text-xs tracking-[0.2em]">Print Sheet</button>
+                            </div>
+                        </div>
+                    )}
                 </div>
-                <div className="absolute top-[-20px] right-[-20px] opacity-10">
-                  <ArrowRightLeft size={100} />
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                {Object.keys(weeklyOut).filter(id => weeklyOut[id].count > 0).length === 0 ? (
-                  <p className="text-center py-20 text-slate-300 font-black uppercase text-[10px] tracking-widest italic">No sales tracked yet</p>
-                ) : (
-                  Object.keys(weeklyOut).map(id => {
-                    if (weeklyOut[id].count <= 0) return null;
-                    return (
-                      <div key={id} className="bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center">
-                        <p className="font-black text-[11px] uppercase">{weeklyOut[id].name}</p>
-                        <div className="flex items-center space-x-3">
-                          <p className="text-xs font-black text-blue-600">{weeklyOut[id].count} Sold</p>
-                          <button 
-                            onClick={async () => {
-                              if(confirm("Clear this count?")) {
-                                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'weeklyMovements', id));
-                              }
-                            }}
-                            className="text-slate-300"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      </main>
+            );
+        }
 
-      {/* Footer CTA */}
-      <footer className="fixed bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-xl border-t border-slate-100 pb-[calc(1rem+env(safe-area-inset-bottom))]">
-        <div className="max-w-xl mx-auto">
-          <button 
-            onClick={sendReport}
-            className="w-full bg-blue-600 text-white font-black text-xs uppercase tracking-[0.2em] py-5 rounded-full shadow-lg shadow-blue-200 active:scale-[0.98] transition-all flex items-center justify-center space-x-2"
-          >
-            <Send size={16} />
-            <span>Generate Cloud Report</span>
-          </button>
-        </div>
-      </footer>
-    </div>
-  );
-};
-
-export default App;
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
