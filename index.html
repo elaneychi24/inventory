@@ -109,11 +109,11 @@
             const [toast, setToast] = useState(null);
             const [loading, setLoading] = useState(true);
             const [lastScanned, setLastScanned] = useState(null);
-            const [scannerActive, setScannerActive] = useState(false);
             
             const scannerInstance = useRef(null);
             const fb = window.FirebaseBridge;
 
+            // Auth Setup
             useEffect(() => {
                 const initAuth = async () => {
                     try {
@@ -132,6 +132,7 @@
                 return () => unsubscribe();
             }, []);
 
+            // Data Fetching
             useEffect(() => {
                 if (!user || !fb) return;
                 
@@ -153,6 +154,11 @@
                 return () => { unsubInv(); unsubMov(); };
             }, [user]);
 
+            // Icons
+            useEffect(() => { 
+                if (window.lucide) window.lucide.createIcons(); 
+            }, [view, inventory, isManaging, lastScanned]);
+
             const updateQty = async (id, delta) => {
                 const item = inventory[id];
                 if (!item) return;
@@ -169,7 +175,6 @@
                             name: item.name 
                         }, { merge: true });
                     }
-
                     showToast(`${delta > 0 ? 'Restocked' : 'Sold'}: ${item.name}`);
                 } catch (err) { showToast("Sync Error"); }
             };
@@ -183,39 +188,63 @@
                 } catch (err) { showToast("Error removing product"); }
             };
 
+            const toggleView = async (target) => {
+                // If switching away from scanner, kill it first
+                if (view === 'scanner' && target !== 'scanner') {
+                    await stopScanner();
+                }
+                
+                if (target === 'scanner') {
+                    setIsManaging(false);
+                    startScanner();
+                } else if (target === 'inventory') {
+                    setView('inventory');
+                } else if (target === 'audit') {
+                    setIsManaging(false);
+                    setView('audit');
+                }
+            };
+
             const startScanner = async () => {
                 setView('scanner');
-                setScannerActive(true);
-                setTimeout(() => {
+                // Timeout to allow DOM to render #reader
+                setTimeout(async () => {
+                    if (scannerInstance.current) return;
                     const html5QrCode = new Html5Qrcode("reader");
                     scannerInstance.current = html5QrCode;
-                    html5QrCode.start(
-                        { facingMode: "environment" },
-                        { fps: 20, qrbox: 220, aspectRatio: 1.0 },
-                        (decodedText) => {
-                            const code = decodedText.trim();
-                            if (inventory[code]) {
-                                setLastScanned({ id: code, name: inventory[code].name });
-                                updateQty(code, scanMode === 'in' ? 1 : -1);
-                                if (window.navigator.vibrate) window.navigator.vibrate([50, 30, 50]);
-                            } else {
-                                setLastScanned({ id: code, name: "Unregistered Tag", isNew: true });
-                            }
-                        },
-                        (e) => {}
-                    ).catch(err => {
+                    try {
+                        await html5QrCode.start(
+                            { facingMode: "environment" },
+                            { fps: 20, qrbox: 220, aspectRatio: 1.0 },
+                            (decodedText) => {
+                                const code = decodedText.trim();
+                                if (inventory[code]) {
+                                    setLastScanned({ id: code, name: inventory[code].name });
+                                    updateQty(code, scanMode === 'in' ? 1 : -1);
+                                    if (window.navigator.vibrate) window.navigator.vibrate([50, 30, 50]);
+                                } else {
+                                    setLastScanned({ id: code, name: "Unknown Tag", isNew: true });
+                                }
+                            },
+                            (e) => {}
+                        );
+                    } catch (err) {
                         showToast("Camera Error");
-                        setScannerActive(false);
-                    });
-                }, 300);
+                        setView('inventory');
+                    }
+                }, 100);
             };
 
             const stopScanner = async () => {
                 if (scannerInstance.current) {
-                    try { await scannerInstance.current.stop(); } catch (e) {}
-                    scannerInstance.current = null;
+                    try {
+                        await scannerInstance.current.stop();
+                        scannerInstance.current = null;
+                    } catch (e) {
+                        console.error("Scanner Stop Error", e);
+                        scannerInstance.current = null;
+                    }
                 }
-                setScannerActive(false);
                 setView('inventory');
                 setLastScanned(null);
             };
@@ -238,12 +267,11 @@
                 window.location.href = `mailto:elaney.tedder@gmail.com?subject=Byte Report ${date}&body=${encodeURIComponent(body)}`;
             };
 
-            useEffect(() => { lucide.createIcons(); }, [view, inventory, movements, scannerActive, isManaging]);
-
             if (loading) return <div className="h-screen flex items-center justify-center bg-slate-50"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>;
 
             return (
                 <div className="max-w-md mx-auto h-screen flex flex-col bg-slate-50 shadow-2xl relative overflow-hidden">
+                    {/* Header */}
                     <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top flex justify-between items-center shrink-0 z-20">
                         <div>
                             <h1 className="text-xl font-black italic uppercase">Byte <span className="text-blue-600">Admin</span></h1>
@@ -261,26 +289,27 @@
                                 </button>
                             )}
                             <button 
-                                onClick={() => { setView(view === 'audit' ? 'inventory' : 'audit'); setIsManaging(false); }}
+                                onClick={() => toggleView(view === 'audit' ? 'inventory' : 'audit')}
                                 className={`p-3 rounded-xl ${view === 'audit' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}
                             >
                                 <i data-lucide="bar-chart-3" className="w-5 h-5"></i>
                             </button>
                             <button 
-                                onClick={scannerActive ? stopScanner : startScanner} 
-                                className={`p-3 rounded-xl transition-all ${scannerActive ? 'bg-red-500 text-white' : 'bg-slate-900 text-white'} shadow-lg`}
+                                onClick={() => toggleView(view === 'scanner' ? 'inventory' : 'scanner')} 
+                                className={`p-3 rounded-xl transition-all ${view === 'scanner' ? 'bg-red-500 text-white' : 'bg-slate-900 text-white'} shadow-lg`}
                             >
-                                <i data-lucide={scannerActive ? "x" : "scan"}></i>
+                                <i data-lucide={view === 'scanner' ? "x" : "scan"} className="w-5 h-5"></i>
                             </button>
                         </div>
                     </header>
 
+                    {/* Content Area */}
                     <main className="flex-1 overflow-y-auto p-4 pb-32">
                         {view === 'scanner' && (
-                            <div className="space-y-4">
+                            <div className="space-y-4 animate-in fade-in duration-300">
                                 <div className="flex bg-slate-200 p-1 rounded-2xl">
-                                    <button onClick={() => setScanMode('in')} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scanMode === 'in' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>Restock</button>
-                                    <button onClick={() => setScanMode('out')} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scanMode === 'out' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500'}`}>Sold</button>
+                                    <button onClick={() => setScanMode('in')} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scanMode === 'in' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>Restock (+)</button>
+                                    <button onClick={() => setScanMode('out')} className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scanMode === 'out' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500'}`}>Sold (-)</button>
                                 </div>
                                 <div className="relative rounded-[32px] overflow-hidden bg-black shadow-xl aspect-square max-h-[350px]">
                                     <div id="reader"></div>
@@ -319,25 +348,25 @@
                         )}
 
                         {view === 'inventory' && (
-                            <div className="space-y-3">
+                            <div className="space-y-3 animate-in fade-in duration-300">
                                 {Object.entries(inventory).sort((a,b) => a[1].name.localeCompare(b[1].name)).map(([id, item]) => (
                                     <div key={id} className={`bg-white p-4 rounded-2xl border flex items-center justify-between transition-all ${isManaging ? 'border-orange-200' : 'border-slate-100 shadow-sm'}`}>
                                         <div className="flex-1 min-w-0 pr-4">
                                             <h3 className="font-black text-xs uppercase truncate text-slate-800">{item.name}</h3>
-                                            <p className="text-[9px] font-bold text-slate-400 uppercase">Current: <span className="text-slate-900">{item.qty || 0}</span></p>
+                                            <p className="text-[9px] font-bold text-slate-400 uppercase">Stock: <span className="text-slate-900">{item.qty || 0}</span></p>
                                         </div>
                                         <div className="flex items-center space-x-2">
                                             {isManaging ? (
                                                 <button 
                                                     onClick={() => removeProduct(id)}
-                                                    className="w-10 h-10 rounded-xl bg-red-50 text-red-500 flex items-center justify-center"
+                                                    className="w-10 h-10 rounded-xl bg-red-50 text-red-500 flex items-center justify-center active:scale-95 transition-transform"
                                                 >
                                                     <i data-lucide="trash-2" className="w-4 h-4"></i>
                                                 </button>
                                             ) : (
                                                 <>
-                                                    <button onClick={() => updateQty(id, -1)} className="w-10 h-10 rounded-xl bg-slate-50 text-slate-400 flex items-center justify-center font-black">-</button>
-                                                    <button onClick={() => updateQty(id, 1)} className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black shadow-md">+</button>
+                                                    <button onClick={() => updateQty(id, -1)} className="w-10 h-10 rounded-xl bg-slate-50 text-slate-400 flex items-center justify-center font-black active:bg-slate-200">-</button>
+                                                    <button onClick={() => updateQty(id, 1)} className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black shadow-md active:scale-95 transition-transform">+</button>
                                                 </>
                                             )}
                                         </div>
@@ -347,18 +376,20 @@
                         )}
                     </main>
 
+                    {/* Global Footer Actions */}
                     <div className="absolute bottom-0 left-0 right-0 p-4 bg-white/80 backdrop-blur-md border-t border-slate-100 safe-bottom z-30">
                         <button 
                             onClick={emailReport}
-                            className={`w-full font-black text-xs uppercase tracking-widest py-5 rounded-full shadow-lg flex items-center justify-center transition-all ${view === 'audit' ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500 hover:bg-blue-600 hover:text-white'}`}
+                            className={`w-full font-black text-xs uppercase tracking-widest py-5 rounded-full shadow-lg flex items-center justify-center transition-all ${view === 'audit' ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-900 hover:text-white'}`}
                         >
                             <i data-lucide="mail" className="w-4 h-4 mr-2"></i>
                             Send Weekly Audit
                         </button>
                     </div>
 
+                    {/* Toast Notification */}
                     {toast && (
-                        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl z-50">
+                        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl z-50 animate-in fade-in zoom-in slide-in-from-bottom-2">
                             {toast}
                         </div>
                     )}
