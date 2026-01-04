@@ -18,7 +18,6 @@
         body { display: flex; flex-direction: column; }
         main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 160px; }
         
-        /* Fixed Video Sizing */
         #reader { 
             width: 100% !important; 
             border: none !important; 
@@ -31,23 +30,22 @@
             border-radius: 24px;
         }
 
-        /* Scan Guide Overlay */
         .scan-overlay {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 250px;
-            height: 150px;
-            border: 2px solid rgba(255,255,255,0.5);
-            border-radius: 12px;
+            width: 260px;
+            height: 160px;
+            border: 2px solid rgba(255,255,255,0.4);
+            border-radius: 16px;
             pointer-events: none;
             z-index: 10;
         }
         .scan-overlay::after {
-            content: "ALIGN BARCODE HERE";
+            content: "CENTER BARCODE HERE";
             position: absolute;
-            bottom: -25px;
+            bottom: -30px;
             left: 0;
             right: 0;
             text-align: center;
@@ -55,6 +53,7 @@
             font-size: 10px;
             font-weight: 900;
             letter-spacing: 1px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
         }
 
         .toast { visibility: hidden; min-width: 200px; background: #0f172a; color: #fff; text-align: center; border-radius: 50px; padding: 12px 20px; position: fixed; z-index: 100; left: 50%; transform: translateX(-50%); bottom: 120px; font-size: 12px; font-weight: 800; }
@@ -88,16 +87,24 @@
 
             <!-- Scanner Box -->
             <div class="bg-white p-4 rounded-[32px] shadow-sm border border-slate-100">
-                <div id="reader-container" class="relative bg-slate-100 rounded-[24px] overflow-hidden min-h-[300px] flex items-center justify-center">
+                <div id="reader-container" class="relative bg-slate-100 rounded-[24px] overflow-hidden min-h-[320px] flex items-center justify-center">
                     <div id="reader"></div>
                     <div id="scan-guide" class="scan-overlay hidden"></div>
                     <div id="placeholder" class="text-center p-6">
                         <button onclick="startScanner()" class="bg-blue-600 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg active:scale-95">Start Scanner</button>
                     </div>
                 </div>
-                <div class="grid grid-cols-2 gap-2 mt-4">
-                    <button onclick="manualEntry()" class="bg-slate-50 py-3 rounded-xl font-black text-[10px] uppercase border border-slate-100 active:bg-slate-200">Manual Entry</button>
-                    <button onclick="stopScanner()" class="bg-slate-50 py-3 rounded-xl font-black text-[10px] uppercase border border-slate-100 text-slate-400 active:bg-slate-200">Stop Scan</button>
+                
+                <!-- Helper Tools -->
+                <div class="space-y-2 mt-4">
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="manualEntry()" class="bg-slate-50 py-3 rounded-xl font-black text-[10px] uppercase border border-slate-100 active:bg-slate-200">Manual Entry</button>
+                        <button onclick="stopScanner()" class="bg-slate-50 py-3 rounded-xl font-black text-[10px] uppercase border border-slate-100 text-slate-400 active:bg-slate-200">Stop Scan</button>
+                    </div>
+                    <!-- TEST BUTTON -->
+                    <button onclick="simulateScan()" class="w-full bg-slate-900 text-white/70 py-3 rounded-xl font-black text-[9px] uppercase tracking-widest border border-slate-800 active:bg-blue-600 active:text-white transition-colors">
+                        Simulate Test Scan (Unknown Barcode)
+                    </button>
                 </div>
             </div>
 
@@ -117,7 +124,7 @@
         <div id="audit-view" class="max-w-xl mx-auto hidden space-y-4">
             <div class="bg-slate-900 p-6 rounded-[32px] text-white">
                 <h3 class="font-black uppercase italic">Weekly Audit</h3>
-                <p class="text-[10px] text-slate-400">Total items moved out this week.</p>
+                <p class="text-[10px] text-slate-400">Total items sold/moved out.</p>
             </div>
             <div id="audit-list" class="space-y-2"></div>
         </div>
@@ -141,39 +148,34 @@
 
         async function startScanner() {
             try {
-                // Show guide and hide placeholder
                 document.getElementById('placeholder').style.display = 'none';
                 document.getElementById('scan-guide').classList.remove('hidden');
                 
                 scanner = new Html5Qrcode("reader");
                 
-                // Optimized config for iPhone Barcode scanning
                 const config = { 
-                    fps: 20, // Increased FPS for faster capture
-                    qrbox: { width: 280, height: 180 }, // Slightly larger box
+                    fps: 25, 
+                    qrbox: { width: 280, height: 180 },
                     aspectRatio: 1.0,
-                    experimentalFeatures: {
-                        useBarCodeDetectorIfSupported: true
-                    }
+                    formatsToSupport: [ 
+                        Html5QrcodeSupportedFormats.UPC_A, 
+                        Html5QrcodeSupportedFormats.UPC_E, 
+                        Html5QrcodeSupportedFormats.EAN_13 
+                    ]
                 };
 
                 await scanner.start(
                     { facingMode: "environment" }, 
                     config, 
                     (decodedText) => {
-                        // Success Callback
                         processBarcode(decodedText);
-                        if (navigator.vibrate) navigator.vibrate(100); // Longer vibration for success
-                        
-                        // Briefly pulse the overlay to show detection
-                        const guide = document.getElementById('scan-guide');
-                        guide.style.borderColor = "#3b82f6";
-                        setTimeout(() => guide.style.borderColor = "rgba(255,255,255,0.5)", 500);
+                        if (navigator.vibrate) navigator.vibrate(100);
+                        flashUI();
                     }
                 );
             } catch (err) {
-                console.error("Scanner failed", err);
-                alert("Camera Error: Please ensure you have granted camera permissions in your browser settings.");
+                console.error(err);
+                alert("Please ensure you're using Safari on iPhone and have allowed camera access.");
                 stopScanner();
             }
         }
@@ -189,6 +191,31 @@
             }
         }
 
+        // TEST FUNCTION: Simulates a random barcode
+        function simulateScan() {
+            const randomID = Math.floor(Math.random() * 900000000000) + 100000000000;
+            processBarcode(randomID.toString());
+            
+            // Visual feedback even if camera is off
+            const toast = document.getElementById('toast');
+            toast.style.background = "#3b82f6";
+            setTimeout(() => toast.style.background = "#0f172a", 500);
+            
+            if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
+        }
+
+        function flashUI() {
+            const guide = document.getElementById('scan-guide');
+            if (guide) {
+                guide.style.borderColor = "#3b82f6";
+                guide.style.borderWidth = "4px";
+                setTimeout(() => {
+                    guide.style.borderColor = "rgba(255,255,255,0.4)";
+                    guide.style.borderWidth = "2px";
+                }, 300);
+            }
+        }
+
         function processBarcode(code) {
             const presets = {
                 "071569000019": "La Colombe Latte",
@@ -196,14 +223,24 @@
                 "812425010005": "Celsius Orange"
             };
 
-            let name = presets[code] || "Item " + code;
-            if (!inventory[code]) {
-                const custom = prompt("New Item Detected! Enter Name:", name);
-                if (!custom) return;
+            let name = presets[code];
+            
+            // If it's a new item, prompt for info
+            if (!inventory[code] && !name) {
+                const newName = prompt(`Unknown Barcode (${code})\n\nEnter Product Name:`);
+                if (!newName) return;
                 
-                const threshold = prompt(`What is the restock alert point for ${custom}?`, "2");
-                inventory[code] = { name: custom, qty: 0, threshold: parseInt(threshold) || 2 };
+                const threshold = prompt(`Restock Alert Point for ${newName}:`, "2");
+                inventory[code] = { 
+                    name: newName, 
+                    qty: 0, 
+                    threshold: parseInt(threshold) || 2 
+                };
+            } else if (!inventory[code] && name) {
+                // Known preset but first time stocking it
+                inventory[code] = { name: name, qty: 0, threshold: 2 };
             }
+
             updateQty(code, currentMode === 'in' ? 1 : -1);
         }
 
@@ -213,11 +250,11 @@
             const id = "M-" + name.toLowerCase().replace(/\s+/g, '-');
             
             if (!inventory[id]) {
-                const threshold = prompt("Restock Point (Alert when qty is below...):", "2");
+                const threshold = prompt("Restock Point:", "2");
                 inventory[id] = { name: name, qty: 0, threshold: parseInt(threshold) || 2 };
             }
             
-            const amtStr = prompt(`How many ${name} to ${currentMode === 'in' ? 'ADD' : 'REMOVE'}?`, "1");
+            const amtStr = prompt(`Count to ${currentMode === 'in' ? 'ADD' : 'REMOVE'}?`, "1");
             const amt = parseInt(amtStr) || 0;
             updateQty(id, currentMode === 'in' ? amt : -amt);
         }
@@ -234,7 +271,7 @@
             }
             
             save();
-            showToast(delta > 0 ? `Added ${delta} ${inventory[id].name}` : `Removed ${Math.abs(delta)} ${inventory[id].name}`);
+            showToast(delta > 0 ? `Added ${inventory[id].name}` : `Sold ${inventory[id].name}`);
         }
 
         function save() {
@@ -249,6 +286,10 @@
             
             const keys = Object.keys(inventory).sort((a,b) => inventory[a].name.localeCompare(inventory[b].name));
             
+            if (keys.length === 0) {
+                list.innerHTML = `<div class="text-center py-10 text-slate-300 text-[10px] font-bold uppercase tracking-widest">No Items Tracked Yet</div>`;
+            }
+
             keys.forEach(id => {
                 const item = inventory[id];
                 const isLow = item.qty <= item.threshold;
@@ -284,7 +325,11 @@
             if(currentView === 'audit') {
                 const list = document.getElementById('audit-list');
                 list.innerHTML = '';
-                Object.keys(weeklyOut).forEach(id => {
+                const keys = Object.keys(weeklyOut).filter(k => weeklyOut[k] > 0);
+                if (keys.length === 0) {
+                    list.innerHTML = `<div class="text-center py-10 text-slate-500 text-[10px] font-bold uppercase tracking-widest">No Sales Recorded</div>`;
+                }
+                keys.forEach(id => {
                     const div = document.createElement('div');
                     div.className = "bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center";
                     div.innerHTML = `<p class="font-black text-[10px] uppercase">${inventory[id]?.name || id}</p><p class="text-xs font-black text-blue-600">${weeklyOut[id]} Sold</p>`;
@@ -297,7 +342,7 @@
             const date = new Date().toLocaleDateString();
             let body = `THE DAILY BYTE REPORT: ${date}\n\nSALES/MOVEMENTS THIS PERIOD:\n`;
             Object.keys(weeklyOut).forEach(id => {
-                body += `- ${inventory[id]?.name || id}: ${weeklyOut[id]} units\n`;
+                if(weeklyOut[id] > 0) body += `- ${inventory[id]?.name || id}: ${weeklyOut[id]} units\n`;
             });
             body += `\nCURRENT STOCK LEVELS:\n`;
             Object.keys(inventory).forEach(id => {
