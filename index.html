@@ -5,67 +5,60 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0, viewport-fit=cover">
     <title>Daily Byte Tracker</title>
     
-    <!-- PWA Tags for iPhone -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/html5-qrcode"></script>
+    <!-- Library to generate QRs for stickers -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     
     <style>
         :root { --sat: env(safe-area-inset-top); --sab: env(safe-area-inset-bottom); }
-        html, body { height: 100dvh; margin: 0; overflow: hidden; position: fixed; width: 100%; background: #f8fafc; }
+        html, body { height: 100dvh; margin: 0; overflow: hidden; position: fixed; width: 100%; background: #f8fafc; font-family: sans-serif; }
         body { display: flex; flex-direction: column; }
         main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 160px; }
         
-        #reader { 
-            width: 100% !important; 
-            border: none !important; 
-            border-radius: 24px; 
-            overflow: hidden; 
-            background: #000;
-        }
-        #reader__scan_region video {
-            object-fit: cover !important;
-            border-radius: 24px;
-        }
+        #reader { width: 100% !important; border: none !important; border-radius: 24px; overflow: hidden; background: #000; }
+        #reader__scan_region video { object-fit: cover !important; border-radius: 24px; }
 
         .scan-overlay {
             position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 260px;
-            height: 160px;
-            border: 2px solid rgba(255,255,255,0.4);
-            border-radius: 16px;
-            pointer-events: none;
-            z-index: 10;
-        }
-        .scan-overlay::after {
-            content: "CENTER BARCODE HERE";
-            position: absolute;
-            bottom: -30px;
-            left: 0;
-            right: 0;
-            text-align: center;
-            color: white;
-            font-size: 10px;
-            font-weight: 900;
-            letter-spacing: 1px;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 200px; height: 200px;
+            border: 3px solid rgba(255,255,255,0.5);
+            border-radius: 24px;
+            pointer-events: none; z-index: 10;
         }
 
         .toast { visibility: hidden; min-width: 200px; background: #0f172a; color: #fff; text-align: center; border-radius: 50px; padding: 12px 20px; position: fixed; z-index: 100; left: 50%; transform: translateX(-50%); bottom: 120px; font-size: 12px; font-weight: 800; }
         .toast.show { visibility: visible; animation: pop 0.3s ease-out; }
         @keyframes pop { from { opacity: 0; transform: translate(-50%, 20px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+        @media print {
+            body * { visibility: hidden; }
+            #qr-sheet, #qr-sheet * { visibility: visible; }
+            #qr-sheet { position: absolute; left: 0; top: 0; width: 100%; display: grid !important; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        }
     </style>
 </head>
 <body class="text-slate-900">
 
     <div id="toast" class="toast">Updated</div>
 
-    <!-- Header -->
+    <!-- QR Generator Modal (Hidden by default) -->
+    <div id="qr-modal" class="fixed inset-0 bg-black/80 z-[200] hidden flex items-center justify-center p-6">
+        <div class="bg-white w-full max-w-md rounded-[32px] p-6 max-h-[80vh] overflow-y-auto">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="font-black uppercase italic">QR Sticker Generator</h2>
+                <button onclick="closeQRModal()" class="text-slate-400 font-bold">Close</button>
+            </div>
+            <p class="text-[10px] text-slate-500 mb-4 uppercase font-bold tracking-widest">Print these to stick on can bottoms:</p>
+            <div id="qr-sheet" class="grid grid-cols-2 gap-4"></div>
+            <button onclick="window.print()" class="w-full mt-6 bg-blue-600 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest">Print Sticker Sheet</button>
+        </div>
+    </div>
+
     <header class="bg-white border-b border-slate-200 px-6 py-4 pt-[calc(1rem+var(--sat))]">
         <div class="max-w-xl mx-auto flex justify-between items-center">
             <div>
@@ -85,52 +78,46 @@
                 <button onclick="setMode('out')" id="btn-out" class="flex-1 py-3 rounded-xl text-[10px] font-black uppercase text-slate-500">Sell/Move</button>
             </div>
 
-            <!-- Scanner Box -->
+            <!-- QR Scanner Box -->
             <div class="bg-white p-4 rounded-[32px] shadow-sm border border-slate-100">
-                <div id="reader-container" class="relative bg-slate-100 rounded-[24px] overflow-hidden min-h-[320px] flex items-center justify-center">
+                <div id="reader-container" class="relative bg-slate-100 rounded-[24px] overflow-hidden min-h-[300px] flex items-center justify-center">
                     <div id="reader"></div>
                     <div id="scan-guide" class="scan-overlay hidden"></div>
                     <div id="placeholder" class="text-center p-6">
-                        <button onclick="startScanner()" class="bg-blue-600 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg active:scale-95">Start Scanner</button>
+                        <div class="mb-4 text-blue-600">
+                            <svg class="w-12 h-12 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" /></svg>
+                        </div>
+                        <button onclick="startScanner()" class="bg-blue-600 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg active:scale-95">Open QR Scanner</button>
                     </div>
                 </div>
                 
-                <!-- Helper Tools -->
-                <div class="space-y-2 mt-4">
-                    <div class="grid grid-cols-2 gap-2">
-                        <button onclick="manualEntry()" class="bg-slate-50 py-3 rounded-xl font-black text-[10px] uppercase border border-slate-100 active:bg-slate-200">Manual Entry</button>
-                        <button onclick="stopScanner()" class="bg-slate-50 py-3 rounded-xl font-black text-[10px] uppercase border border-slate-100 text-slate-400 active:bg-slate-200">Stop Scan</button>
-                    </div>
-                    <!-- TEST BUTTON -->
-                    <button onclick="simulateScan()" class="w-full bg-slate-900 text-white/70 py-3 rounded-xl font-black text-[9px] uppercase tracking-widest border border-slate-800 active:bg-blue-600 active:text-white transition-colors">
-                        Simulate Test Scan (Unknown Barcode)
-                    </button>
+                <div class="grid grid-cols-2 gap-2 mt-4">
+                    <button onclick="manualEntry()" class="bg-slate-50 py-3 rounded-xl font-black text-[10px] uppercase border border-slate-100">Manual</button>
+                    <button onclick="openQRModal()" class="bg-slate-900 text-white py-3 rounded-xl font-black text-[10px] uppercase shadow-md">Get QR Codes</button>
                 </div>
             </div>
 
             <!-- List -->
             <div class="space-y-3">
-                <h3 class="font-black text-slate-400 text-[9px] uppercase tracking-widest px-2">Current Inventory</h3>
+                <h3 class="font-black text-slate-400 text-[9px] uppercase tracking-widest px-2">Live Inventory</h3>
                 <div id="inventory-list" class="space-y-2"></div>
             </div>
 
-            <!-- Danger Zone -->
             <div class="pt-8 opacity-30">
-                <button onclick="confirmReset()" class="text-[8px] font-bold uppercase tracking-widest text-red-500 w-full text-center underline">Reset All Data</button>
+                <button onclick="confirmReset()" class="text-[8px] font-bold uppercase tracking-widest text-red-500 w-full text-center underline">Reset Local Data</button>
             </div>
         </div>
 
         <!-- Audit View -->
         <div id="audit-view" class="max-w-xl mx-auto hidden space-y-4">
             <div class="bg-slate-900 p-6 rounded-[32px] text-white">
-                <h3 class="font-black uppercase italic">Weekly Audit</h3>
-                <p class="text-[10px] text-slate-400">Total items sold/moved out.</p>
+                <h3 class="font-black uppercase italic">Weekly Movements</h3>
+                <p class="text-[10px] text-slate-400">Total items sold or removed from machine.</p>
             </div>
             <div id="audit-list" class="space-y-2"></div>
         </div>
     </main>
 
-    <!-- Footer -->
     <div class="fixed bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md border-t border-slate-100 pb-[calc(1rem+var(--sab))]">
         <div class="max-w-xl mx-auto">
             <button onclick="emailData()" class="w-full bg-blue-600 text-white font-black text-xs uppercase tracking-widest py-5 rounded-full shadow-lg active:scale-95">
@@ -140,42 +127,39 @@
     </div>
 
     <script>
-        let inventory = JSON.parse(localStorage.getItem('db_inv')) || {};
+        let inventory = JSON.parse(localStorage.getItem('db_inv')) || {
+            "QR-COLOMBE": { name: "La Colombe Latte", qty: 0, threshold: 2 },
+            "QR-CELSIUS": { name: "Celsius Orange", qty: 0, threshold: 2 },
+            "QR-POPPI": { name: "Poppi Strawberry", qty: 0, threshold: 2 }
+        };
         let weeklyOut = JSON.parse(localStorage.getItem('db_weekly')) || {};
         let currentMode = 'in';
         let currentView = 'inventory';
         let scanner = null;
 
         async function startScanner() {
-            try {
-                document.getElementById('placeholder').style.display = 'none';
-                document.getElementById('scan-guide').classList.remove('hidden');
-                
-                scanner = new Html5Qrcode("reader");
-                
-                const config = { 
-                    fps: 25, 
-                    qrbox: { width: 280, height: 180 },
-                    aspectRatio: 1.0,
-                    formatsToSupport: [ 
-                        Html5QrcodeSupportedFormats.UPC_A, 
-                        Html5QrcodeSupportedFormats.UPC_E, 
-                        Html5QrcodeSupportedFormats.EAN_13 
-                    ]
-                };
+            document.getElementById('placeholder').style.display = 'none';
+            document.getElementById('scan-guide').classList.remove('hidden');
+            
+            scanner = new Html5Qrcode("reader");
+            const config = { 
+                fps: 20, 
+                qrbox: { width: 200, height: 200 },
+                aspectRatio: 1.0
+            };
 
+            try {
                 await scanner.start(
                     { facingMode: "environment" }, 
                     config, 
                     (decodedText) => {
-                        processBarcode(decodedText);
-                        if (navigator.vibrate) navigator.vibrate(100);
+                        processQR(decodedText);
+                        if (navigator.vibrate) navigator.vibrate(80);
                         flashUI();
                     }
                 );
             } catch (err) {
-                console.error(err);
-                alert("Please ensure you're using Safari on iPhone and have allowed camera access.");
+                alert("Camera error. Please use Safari on iPhone.");
                 stopScanner();
             }
         }
@@ -191,85 +175,31 @@
             }
         }
 
-        // TEST FUNCTION: Simulates a random barcode
-        function simulateScan() {
-            const randomID = Math.floor(Math.random() * 900000000000) + 100000000000;
-            processBarcode(randomID.toString());
-            
-            // Visual feedback even if camera is off
-            const toast = document.getElementById('toast');
-            toast.style.background = "#3b82f6";
-            setTimeout(() => toast.style.background = "#0f172a", 500);
-            
-            if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
-        }
-
         function flashUI() {
             const guide = document.getElementById('scan-guide');
-            if (guide) {
-                guide.style.borderColor = "#3b82f6";
-                guide.style.borderWidth = "4px";
-                setTimeout(() => {
-                    guide.style.borderColor = "rgba(255,255,255,0.4)";
-                    guide.style.borderWidth = "2px";
-                }, 300);
-            }
+            guide.style.borderColor = "#3b82f6";
+            setTimeout(() => guide.style.borderColor = "rgba(255,255,255,0.5)", 200);
         }
 
-        function processBarcode(code) {
-            const presets = {
-                "071569000019": "La Colombe Latte",
-                "850004940003": "Poppi Strawberry",
-                "812425010005": "Celsius Orange"
-            };
-
-            let name = presets[code];
-            
-            // If it's a new item, prompt for info
-            if (!inventory[code] && !name) {
-                const newName = prompt(`Unknown Barcode (${code})\n\nEnter Product Name:`);
-                if (!newName) return;
-                
-                const threshold = prompt(`Restock Alert Point for ${newName}:`, "2");
-                inventory[code] = { 
-                    name: newName, 
-                    qty: 0, 
-                    threshold: parseInt(threshold) || 2 
-                };
-            } else if (!inventory[code] && name) {
-                // Known preset but first time stocking it
+        function processQR(code) {
+            // If the QR code is just a raw ID we haven't seen
+            if (!inventory[code]) {
+                const name = prompt(`New Item Found! (${code})\n\nWhat is the product name?`);
+                if (!name) return;
                 inventory[code] = { name: name, qty: 0, threshold: 2 };
             }
-
             updateQty(code, currentMode === 'in' ? 1 : -1);
-        }
-
-        function manualEntry() {
-            const name = prompt("Item Name:");
-            if (!name) return;
-            const id = "M-" + name.toLowerCase().replace(/\s+/g, '-');
-            
-            if (!inventory[id]) {
-                const threshold = prompt("Restock Point:", "2");
-                inventory[id] = { name: name, qty: 0, threshold: parseInt(threshold) || 2 };
-            }
-            
-            const amtStr = prompt(`Count to ${currentMode === 'in' ? 'ADD' : 'REMOVE'}?`, "1");
-            const amt = parseInt(amtStr) || 0;
-            updateQty(id, currentMode === 'in' ? amt : -amt);
         }
 
         function updateQty(id, delta) {
             if (!inventory[id]) return;
-            
             if (delta < 0) {
-                const actualRemoval = Math.min(inventory[id].qty, Math.abs(delta));
-                inventory[id].qty -= actualRemoval;
-                weeklyOut[id] = (weeklyOut[id] || 0) + actualRemoval;
+                const actual = Math.min(inventory[id].qty, Math.abs(delta));
+                inventory[id].qty -= actual;
+                weeklyOut[id] = (weeklyOut[id] || 0) + actual;
             } else {
                 inventory[id].qty += delta;
             }
-            
             save();
             showToast(delta > 0 ? `Added ${inventory[id].name}` : `Sold ${inventory[id].name}`);
         }
@@ -283,36 +213,56 @@
         function render() {
             const list = document.getElementById('inventory-list');
             list.innerHTML = '';
-            
-            const keys = Object.keys(inventory).sort((a,b) => inventory[a].name.localeCompare(inventory[b].name));
-            
-            if (keys.length === 0) {
-                list.innerHTML = `<div class="text-center py-10 text-slate-300 text-[10px] font-bold uppercase tracking-widest">No Items Tracked Yet</div>`;
-            }
-
-            keys.forEach(id => {
+            Object.keys(inventory).sort().forEach(id => {
                 const item = inventory[id];
                 const isLow = item.qty <= item.threshold;
                 const div = document.createElement('div');
-                div.className = `bg-white p-4 rounded-2xl border flex justify-between items-center transition-all ${isLow ? 'border-red-200 bg-red-50/30' : 'border-slate-100 shadow-sm'}`;
+                div.className = `bg-white p-4 rounded-2xl border flex justify-between items-center ${isLow ? 'border-red-200 bg-red-50/30' : 'border-slate-100'}`;
                 div.innerHTML = `
                     <div class="truncate pr-2">
-                        <p class="font-black text-[10px] uppercase truncate tracking-tight text-slate-800">${item.name}</p>
-                        <p class="text-[8px] font-black ${isLow ? 'text-red-500' : 'text-slate-400'} uppercase tracking-widest mt-1">${isLow ? 'RESTOCK NOW' : 'STOCKED'}</p>
+                        <p class="font-black text-[10px] uppercase truncate tracking-tight">${item.name}</p>
+                        <p class="text-[7px] text-slate-400 font-bold uppercase tracking-widest mt-1">${id}</p>
                     </div>
                     <div class="flex items-center space-x-2">
-                        <button onclick="updateQty('${id}', -1)" class="w-10 h-10 bg-slate-100 rounded-xl font-bold text-slate-400 active:bg-slate-200">-</button>
+                        <button onclick="updateQty('${id}', -1)" class="w-10 h-10 bg-slate-100 rounded-xl font-bold text-slate-400">-</button>
                         <span class="text-xs font-black w-6 text-center">${item.qty}</span>
-                        <button onclick="updateQty('${id}', 1)" class="w-10 h-10 bg-slate-900 rounded-xl font-bold text-white shadow-lg active:scale-95">+</button>
+                        <button onclick="updateQty('${id}', 1)" class="w-10 h-10 bg-slate-900 rounded-xl font-bold text-white shadow-lg">+</button>
                     </div>`;
                 list.appendChild(div);
             });
         }
 
+        // QR STICKER LOGIC
+        function openQRModal() {
+            document.getElementById('qr-modal').classList.remove('hidden');
+            const sheet = document.getElementById('qr-sheet');
+            sheet.innerHTML = '';
+            Object.keys(inventory).forEach(id => {
+                const container = document.createElement('div');
+                container.className = "flex flex-col items-center p-2 border border-slate-100 rounded-xl bg-slate-50";
+                const qrDiv = document.createElement('div');
+                new QRCode(qrDiv, { text: id, width: 80, height: 80 });
+                container.appendChild(qrDiv);
+                const label = document.createElement('p');
+                label.className = "text-[7px] font-black uppercase mt-2 text-center truncate w-full";
+                label.innerText = inventory[id].name;
+                container.appendChild(label);
+                sheet.appendChild(container);
+            });
+        }
+
+        function closeQRModal() {
+            document.getElementById('qr-modal').classList.add('hidden');
+        }
+
+        function manualEntry() {
+            const code = prompt("Enter QR Code ID or Product Name:");
+            if (code) processQR(code.toUpperCase());
+        }
+
         function setMode(m) {
             currentMode = m;
             document.getElementById('mode-label').innerText = `Mode: ${m === 'in' ? 'Stocking In' : 'Selling / Moving Out'}`;
-            document.getElementById('mode-label').className = m === 'in' ? 'text-[9px] text-blue-500 font-bold uppercase tracking-widest mt-1' : 'text-[9px] text-orange-500 font-bold uppercase tracking-widest mt-1';
             document.getElementById('btn-in').className = m === 'in' ? 'flex-1 py-3 rounded-xl text-[10px] font-black uppercase bg-white shadow-sm' : 'flex-1 py-3 rounded-xl text-[10px] font-black uppercase text-slate-500';
             document.getElementById('btn-out').className = m === 'out' ? 'flex-1 py-3 rounded-xl text-[10px] font-black uppercase bg-white shadow-sm' : 'flex-1 py-3 rounded-xl text-[10px] font-black uppercase text-slate-500';
         }
@@ -325,37 +275,28 @@
             if(currentView === 'audit') {
                 const list = document.getElementById('audit-list');
                 list.innerHTML = '';
-                const keys = Object.keys(weeklyOut).filter(k => weeklyOut[k] > 0);
-                if (keys.length === 0) {
-                    list.innerHTML = `<div class="text-center py-10 text-slate-500 text-[10px] font-bold uppercase tracking-widest">No Sales Recorded</div>`;
-                }
-                keys.forEach(id => {
-                    const div = document.createElement('div');
-                    div.className = "bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center";
-                    div.innerHTML = `<p class="font-black text-[10px] uppercase">${inventory[id]?.name || id}</p><p class="text-xs font-black text-blue-600">${weeklyOut[id]} Sold</p>`;
-                    list.appendChild(div);
+                Object.keys(weeklyOut).forEach(id => {
+                    if (weeklyOut[id] > 0) {
+                        const div = document.createElement('div');
+                        div.className = "bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center";
+                        div.innerHTML = `<p class="font-black text-[10px] uppercase">${inventory[id]?.name || id}</p><p class="text-xs font-black text-blue-600">${weeklyOut[id]} Sold</p>`;
+                        list.appendChild(div);
+                    }
                 });
             }
         }
 
         function emailData() {
             const date = new Date().toLocaleDateString();
-            let body = `THE DAILY BYTE REPORT: ${date}\n\nSALES/MOVEMENTS THIS PERIOD:\n`;
-            Object.keys(weeklyOut).forEach(id => {
-                if(weeklyOut[id] > 0) body += `- ${inventory[id]?.name || id}: ${weeklyOut[id]} units\n`;
-            });
-            body += `\nCURRENT STOCK LEVELS:\n`;
-            Object.keys(inventory).forEach(id => {
-                body += `- ${inventory[id].name}: ${inventory[id].qty} remaining\n`;
-            });
+            let body = `THE DAILY BYTE REPORT: ${date}\n\nSALES:\n`;
+            Object.keys(weeklyOut).forEach(id => { if(weeklyOut[id] > 0) body += `- ${inventory[id]?.name}: ${weeklyOut[id]}\n`; });
+            body += `\nCURRENT STOCK:\n`;
+            Object.keys(inventory).forEach(id => { body += `- ${inventory[id].name}: ${inventory[id].qty}\n`; });
             window.location.href = `mailto:elaney.tedder@gmail.com?subject=Byte Report ${date}&body=${encodeURIComponent(body)}`;
         }
 
         function confirmReset() {
-            if(confirm("Wipe all inventory data? This cannot be undone.")) {
-                localStorage.clear();
-                location.reload();
-            }
+            if(confirm("Wipe all data?")) { localStorage.clear(); location.reload(); }
         }
 
         function showToast(msg) {
