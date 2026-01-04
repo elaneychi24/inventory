@@ -3,31 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0, viewport-fit=cover">
-    <title>The Daily Byte | Cloud Sync</title>
+    <title>The Daily Byte | Admin Console</title>
     
-    <!-- Styling & Icons -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    
-    <!-- React & Babel CDNs -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
 
     <style>
         :root { --sat: env(safe-area-inset-top); --sab: env(safe-area-inset-bottom); }
-        body { background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; }
+        body { background-color: #f8fafc; font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; }
         .safe-top { padding-top: var(--sat); }
         .safe-bottom { padding-bottom: var(--sab); }
         @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
         .animate-slide-up { animation: slideUp 0.3s ease-out; }
         .qr-container img { display: block; margin: 0 auto; }
+        #reader { border: none !important; }
+        #reader video { border-radius: 24px; object-fit: cover; }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
-    <!-- Firebase SDKs -->
     <script type="importmap">
     {
       "imports": {
@@ -43,10 +42,6 @@
         import { getFirestore, collection, doc, onSnapshot, updateDoc, setDoc, deleteDoc, query } from "firebase/firestore";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 
-        /** * AUTHENTICATION SETUP 
-         * If running on GitHub/Local, fill in your Firebase Config here.
-         * If running in the AI Preview, it will use the environment variables.
-         */
         const manualConfig = {
             apiKey: "AIzaSyBqEfCfi0PrF4cQ5qKI5ceJKkBnfmEaLoQ",
             authDomain: "the-daily-byte-inventory.firebaseapp.com",
@@ -65,7 +60,6 @@
         const db = getFirestore(app);
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'daily-byte-v1';
 
-        // Bridge to React
         window.FirebaseBridge = { 
             db, auth, appId, collection, doc, onSnapshot, 
             updateDoc, setDoc, deleteDoc, query, 
@@ -80,7 +74,6 @@
             const [user, setUser] = useState(null);
             const [inventory, setInventory] = useState({});
             const [weeklyOut, setWeeklyOut] = useState({});
-            const [mode, setMode] = useState('in');
             const [view, setView] = useState('inventory');
             const [showQRModal, setShowQRModal] = useState(false);
             const [toast, setToast] = useState(null);
@@ -92,11 +85,9 @@
                 if (!fb) return;
                 const initAuth = async () => {
                     try {
-                        // Priority 1: Custom Token from environment
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
                         } else {
-                            // Priority 2: Anonymous Sign-in (Works for GitHub/Local)
                             await fb.signInAnonymously(fb.auth);
                         }
                     } catch (err) {
@@ -107,7 +98,7 @@
                 initAuth();
                 const unsubscribe = fb.onAuthStateChanged(fb.auth, (u) => {
                     setUser(u);
-                    if (!u) setLoading(false); // Stop loop if auth fails
+                    if (!u) setLoading(false);
                 });
                 return () => unsubscribe();
             }, []);
@@ -115,7 +106,6 @@
             useEffect(() => {
                 if (!user || !fb) return;
                 
-                // Public data path (Rule 1)
                 const invRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory');
                 const unsubInv = fb.onSnapshot(fb.query(invRef), (snap) => {
                     const d = {}; 
@@ -123,17 +113,14 @@
                     setInventory(d);
                     setLoading(false);
                     setTimeout(() => lucide.createIcons(), 100);
-                }, (err) => {
-                    console.error("Firestore Sync Error (Check Rules):", err);
-                    setLoading(false);
-                });
+                }, (err) => setLoading(false));
 
                 const movRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyMovements');
                 const unsubMov = fb.onSnapshot(fb.query(movRef), (snap) => {
                     const d = {}; 
                     snap.forEach(doc => d[doc.id] = doc.data());
                     setWeeklyOut(d);
-                }, (err) => console.error("Movement Sync Error:", err));
+                });
 
                 return () => { unsubInv(); unsubMov(); };
             }, [user]);
@@ -141,7 +128,7 @@
             const updateQty = async (id, delta) => {
                 if (!user) return;
                 const item = inventory[id];
-                const newQty = Math.max(0, item.qty + delta);
+                const newQty = Math.max(0, (item.qty || 0) + delta);
                 try {
                     const itemDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', id);
                     await fb.updateDoc(itemDoc, { qty: newQty });
@@ -151,20 +138,45 @@
                         const currentCount = (weeklyOut[id]?.count || 0) + 1;
                         await fb.setDoc(movDoc, { count: currentCount, name: item.name }, { merge: true });
                     }
-                    showToast(`${delta > 0 ? 'Added' : 'Sold'} ${item.name}`);
+                    showToast(`${delta > 0 ? 'Restocked' : 'Sold'} ${item.name}`);
                 } catch (err) {
-                    showToast("Permission Denied");
+                    showToast("Sync Error");
                 }
+            };
+
+            const downloadCSV = () => {
+                if (Object.keys(weeklyOut).length === 0) {
+                    showToast("No data to export");
+                    return;
+                }
+                const headers = ["Product ID", "Product Name", "Units Sold"];
+                const rows = Object.entries(weeklyOut).map(([id, mov]) => [
+                    id,
+                    `"${mov.name.replace(/"/g, '""')}"`,
+                    mov.count
+                ]);
+                
+                const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", `DailyByte_Report_${new Date().toISOString().split('T')[0]}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showToast("CSV Downloaded");
             };
 
             const addNewItem = async () => {
                 const name = prompt("Product Name:");
                 if (!name) return;
-                const code = prompt("Assign ID:", "QR-" + name.split(' ')[0].toUpperCase());
+                const threshold = parseInt(prompt("Restock alert threshold:", "5")) || 5;
+                const code = prompt("Assign ID:", "QR-" + name.split(' ')[0].toUpperCase() + Math.floor(Math.random()*100));
                 if (!code) return;
                 try {
                     await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', code), {
-                        name, qty: 0, threshold: 2
+                        name, qty: 0, threshold: threshold
                     });
                     showToast(`Created ${name}`);
                 } catch (err) {
@@ -177,75 +189,139 @@
                 setTimeout(() => setToast(null), 2000);
             };
 
+            const startScanner = () => {
+                setView('scanner');
+                setTimeout(() => {
+                    const html5QrCode = new Html5Qrcode("reader");
+                    html5QrCode.start(
+                        { facingMode: "environment" }, 
+                        { fps: 10, qrbox: { width: 250, height: 250 } },
+                        (decodedText) => {
+                            if (inventory[decodedText]) {
+                                updateQty(decodedText, -1);
+                                html5QrCode.stop();
+                                setView('inventory');
+                            } else {
+                                showToast("Unknown QR Code");
+                            }
+                        },
+                        (errorMessage) => {}
+                    ).catch(err => {
+                        setView('inventory');
+                        showToast("Camera Error");
+                    });
+                }, 100);
+            };
+
             useEffect(() => { lucide.createIcons(); }, [view, showQRModal, loading]);
 
-            if (loading) {
-                return (
-                    <div className="h-screen flex flex-col items-center justify-center space-y-4 bg-slate-50">
-                        <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                        <p className="font-black uppercase tracking-widest text-[10px] text-slate-400">Authenticating Cloud...</p>
-                    </div>
-                );
-            }
+            if (loading) return (
+                <div className="h-screen flex flex-col items-center justify-center bg-slate-50">
+                    <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+            );
 
             return (
                 <div className="max-w-md mx-auto h-screen flex flex-col bg-slate-50 relative overflow-hidden shadow-2xl">
-                    <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top">
-                        <div className="flex justify-between items-center">
-                            <div>
-                                <h1 className="text-xl font-black italic uppercase tracking-tighter">The Daily <span className="text-blue-600">Byte</span></h1>
-                                <p className="text-[8px] font-black text-green-500 uppercase tracking-[0.2em] flex items-center">
-                                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5 animate-pulse"></span> {user ? 'Live Sync' : 'Offline'}
-                                </p>
-                            </div>
-                            <button onClick={() => setView(view === 'inventory' ? 'audit' : 'inventory')} className="p-3 bg-slate-50 rounded-2xl text-slate-400">
-                                {view === 'inventory' ? <i data-lucide="clipboard-list"></i> : <i data-lucide="layout-grid"></i>}
+                    <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top flex justify-between items-center z-50">
+                        <div>
+                            <h1 className="text-xl font-black italic uppercase tracking-tighter">Byte <span className="text-blue-600">Admin</span></h1>
+                            <p className="text-[8px] font-black text-green-500 uppercase tracking-widest flex items-center">
+                                <span className="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5"></span> Cloud Active
+                            </p>
+                        </div>
+                        <div className="flex space-x-2">
+                            <button onClick={startScanner} className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
+                                <i data-lucide="scan"></i>
+                            </button>
+                            <button onClick={() => setView(view === 'inventory' ? 'audit' : 'inventory')} className="p-3 bg-slate-50 text-slate-400 rounded-2xl">
+                                {view === 'inventory' ? <i data-lucide="bar-chart-3"></i> : <i data-lucide="layout-grid"></i>}
                             </button>
                         </div>
                     </header>
 
                     <main className="flex-1 overflow-y-auto p-4 pb-32">
-                        {view === 'inventory' ? (
+                        {view === 'scanner' && (
+                            <div className="bg-white rounded-[32px] p-4 border border-slate-100 animate-slide-up">
+                                <div id="reader" className="w-full"></div>
+                                <button onClick={() => setView('inventory')} className="w-full mt-4 py-4 bg-slate-100 rounded-2xl font-black uppercase text-[10px]">Cancel Scan</button>
+                            </div>
+                        )}
+
+                        {view === 'inventory' && (
                             <div className="space-y-4">
                                 <div className="grid grid-cols-2 gap-3">
-                                    <button onClick={() => setShowQRModal(true)} className="bg-white p-5 rounded-[28px] border border-slate-100 flex flex-col items-center space-y-2 shadow-sm">
+                                    <button onClick={() => setShowQRModal(true)} className="bg-white p-5 rounded-[28px] border border-slate-100 flex flex-col items-center space-y-2">
                                         <i data-lucide="qr-code" className="text-blue-600"></i>
-                                        <span className="text-[9px] font-black uppercase">Stickers</span>
+                                        <span className="text-[9px] font-black uppercase tracking-widest">Stickers</span>
                                     </button>
                                     <button onClick={addNewItem} className="bg-slate-900 p-5 rounded-[28px] text-white flex flex-col items-center space-y-2 shadow-lg">
                                         <i data-lucide="plus" className="text-white"></i>
-                                        <span className="text-[9px] font-black uppercase">New Item</span>
+                                        <span className="text-[9px] font-black uppercase tracking-widest">Add New</span>
                                     </button>
                                 </div>
 
                                 <div className="space-y-2">
-                                    {Object.entries(inventory).sort().map(([id, item]) => (
-                                        <div key={id} className="bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center">
-                                            <div className="flex-1 min-w-0 pr-4">
-                                                <p className="font-black text-[11px] uppercase tracking-tight truncate">{item.name}</p>
-                                                <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">{id}</p>
+                                    {Object.entries(inventory).sort().map(([id, item]) => {
+                                        const needsRestock = (item.qty || 0) <= (item.threshold || 5);
+                                        return (
+                                            <div key={id} className={`p-4 rounded-2xl border transition-all ${needsRestock ? 'bg-red-50 border-red-100' : 'bg-white border-slate-100'} flex justify-between items-center`}>
+                                                <div className="flex-1 min-w-0 pr-4">
+                                                    <p className={`font-black text-[11px] uppercase tracking-tight truncate ${needsRestock ? 'text-red-600' : 'text-slate-900'}`}>{item.name}</p>
+                                                    {needsRestock && <p className="text-[7px] font-black text-red-400 uppercase tracking-widest animate-pulse">Restock Soon!</p>}
+                                                    {!needsRestock && <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">{id}</p>}
+                                                </div>
+                                                <div className="flex items-center space-x-2">
+                                                    <button onClick={() => updateQty(id, -1)} className="w-10 h-10 bg-white/50 rounded-xl text-slate-400 font-bold border border-slate-100">-</button>
+                                                    <span className={`w-6 text-center text-xs font-black ${needsRestock ? 'text-red-600' : ''}`}>{item.qty || 0}</span>
+                                                    <button onClick={() => updateQty(id, 1)} className={`w-10 h-10 rounded-xl font-bold text-white shadow-sm ${needsRestock ? 'bg-red-600' : 'bg-slate-900'}`}>+</button>
+                                                </div>
                                             </div>
-                                            <div className="flex items-center space-x-2">
-                                                <button onClick={() => updateQty(id, -1)} className="w-10 h-10 bg-slate-50 rounded-xl text-slate-400 font-bold">-</button>
-                                                <span className="w-6 text-center text-xs font-black">{item.qty}</span>
-                                                <button onClick={() => updateQty(id, 1)} className="w-10 h-10 bg-slate-900 text-white rounded-xl font-bold">+</button>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
-                        ) : (
-                            <div className="space-y-4">
-                                <div className="bg-slate-900 text-white p-6 rounded-[32px] shadow-xl">
-                                    <h3 className="font-black italic uppercase text-lg">Weekly Audit</h3>
-                                    <p className="text-[9px] text-slate-400 uppercase tracking-widest">Global Sales Track</p>
-                                </div>
-                                {Object.entries(weeklyOut).map(([id, mov]) => (
-                                    <div key={id} className="bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center">
-                                        <p className="font-black text-[10px] uppercase truncate flex-1">{mov.name}</p>
-                                        <p className="text-xs font-black text-blue-600">{mov.count} SOLD</p>
+                        )}
+
+                        {view === 'audit' && (
+                            <div className="space-y-4 animate-slide-up">
+                                <div className="bg-slate-900 text-white p-6 rounded-[32px] shadow-xl relative overflow-hidden">
+                                    <div className="relative z-10">
+                                        <h3 className="font-black italic uppercase text-lg">Weekly Movement</h3>
+                                        <p className="text-[9px] text-slate-400 uppercase tracking-widest">Session Export Data</p>
                                     </div>
-                                ))}
+                                    <button 
+                                        onClick={downloadCSV}
+                                        className="absolute right-6 top-6 bg-white/10 hover:bg-white/20 p-3 rounded-2xl transition-colors"
+                                    >
+                                        <i data-lucide="download" className="w-5 h-5"></i>
+                                    </button>
+                                </div>
+
+                                <div className="space-y-2">
+                                    {Object.entries(weeklyOut).length === 0 ? (
+                                        <div className="p-12 text-center text-slate-300 text-[10px] uppercase font-black tracking-widest">No movement recorded</div>
+                                    ) : (
+                                        Object.entries(weeklyOut).map(([id, mov]) => (
+                                            <div key={id} className="bg-white p-4 rounded-2xl border border-slate-100 flex justify-between items-center">
+                                                <div className="flex-1">
+                                                    <p className="font-black text-[10px] uppercase truncate">{mov.name}</p>
+                                                    <p className="text-[7px] text-slate-400 uppercase font-bold">{id}</p>
+                                                </div>
+                                                <p className="text-xs font-black text-blue-600 bg-blue-50 px-4 py-1.5 rounded-full">{mov.count} SOLD</p>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                                
+                                {Object.entries(weeklyOut).length > 0 && (
+                                    <button 
+                                        onClick={downloadCSV}
+                                        className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-blue-200"
+                                    >
+                                        Export CSV Report
+                                    </button>
+                                )}
                             </div>
                         )}
                     </main>
@@ -256,8 +332,8 @@
                         <div className="fixed inset-0 bg-black/80 z-[100] flex flex-col p-6 overflow-y-auto backdrop-blur-sm">
                             <div className="bg-white rounded-[40px] p-6 w-full max-w-sm mx-auto my-auto shadow-2xl">
                                 <div className="flex justify-between items-center mb-6">
-                                    <h2 className="font-black uppercase italic">QR Stickers</h2>
-                                    <button onClick={() => setShowQRModal(false)} className="text-slate-400">✕</button>
+                                    <h2 className="font-black uppercase italic">Print Stickers</h2>
+                                    <button onClick={() => setShowQRModal(false)} className="text-slate-400 text-xl">✕</button>
                                 </div>
                                 <div className="grid grid-cols-2 gap-4 mb-8">
                                     {Object.entries(inventory).map(([id, item]) => (
@@ -267,7 +343,7 @@
                                         </div>
                                     ))}
                                 </div>
-                                <button onClick={() => window.print()} className="w-full bg-blue-600 text-white py-5 rounded-[24px] font-black uppercase text-xs tracking-[0.2em]">Print Sheet</button>
+                                <button onClick={() => window.print()} className="w-full bg-blue-600 text-white py-5 rounded-[24px] font-black uppercase text-xs tracking-[0.2em]">Print Layout</button>
                             </div>
                         </div>
                     )}
