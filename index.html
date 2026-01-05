@@ -109,9 +109,6 @@
             if (!item) {
                 if (!skipBatch) {
                     showToast("Product not found - Add it first!");
-                    state.showAddProduct = true;
-                    state.newProduct.upc = upc;
-                    render();
                 }
                 return;
             }
@@ -141,28 +138,36 @@
         };
 
         window.addProduct = async function() {
-            if (!state.newProduct.name || !state.newProduct.upc) {
+            // Get values from form
+            const nameInput = document.getElementById('prod-name');
+            const upcInput = document.getElementById('prod-upc');
+            const thresholdInput = document.getElementById('prod-threshold');
+            
+            const name = nameInput?.value.trim() || '';
+            const upc = upcInput?.value.trim() || '';
+            const threshold = thresholdInput?.value || 5;
+
+            if (!name || !upc) {
                 showToast("Name and UPC required!");
                 return;
             }
 
-            if (state.inventory[state.newProduct.upc]) {
+            if (state.inventory[upc]) {
                 showToast("Product already exists!");
                 return;
             }
 
             try {
-                const itemDoc = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', state.newProduct.upc);
+                const itemDoc = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', upc);
                 await setDoc(itemDoc, {
-                    name: state.newProduct.name,
-                    upc: state.newProduct.upc,
-                    threshold: parseInt(state.newProduct.threshold) || 5,
+                    name: name,
+                    upc: upc,
+                    threshold: parseInt(threshold) || 5,
                     qty: 0,
                     createdAt: Timestamp.now()
                 });
                 
                 showToast("Product added!");
-                const upc = state.newProduct.upc;
                 state.showAddProduct = false;
                 state.newProduct = { name: '', upc: '', threshold: 5 };
                 render();
@@ -228,10 +233,14 @@
         }
 
         function handleScan(code) {
+            // Check if this exact item is already in the batch
             const existing = state.scannedBatch.find(s => s.upc === code);
+            
             if (existing) {
+                // Increment count for existing item
                 existing.count++;
             } else {
+                // Add new item to batch
                 const item = state.inventory[code];
                 state.scannedBatch.push({
                     upc: code,
@@ -240,6 +249,7 @@
                     exists: !!item
                 });
             }
+            
             if (navigator.vibrate) navigator.vibrate(50);
             render();
         }
@@ -455,7 +465,7 @@
                                 </div>
                             ` : `
                                 <div class="space-y-3">
-                                    ${inventoryArray.map(item => {
+                                    ${inventoryArray.map((item, idx) => {
                                         const isBelowThreshold = item.qty <= item.threshold;
                                         return `
                                             <div class="bg-white p-4 rounded-2xl border flex items-center justify-between shadow-sm ${isBelowThreshold ? 'border-red-300 bg-red-50' : 'border-slate-100'}">
@@ -467,10 +477,10 @@
                                                     </p>
                                                 </div>
                                                 <div class="flex items-center space-x-2">
-                                                    <button onclick="updateState('showQRModal', '${item.upc}')" class="w-8 h-8 rounded-xl bg-blue-50 text-blue-500 flex items-center justify-center">
+                                                    <button onclick='updateState("showQRModal", "${item.upc}")' class="w-8 h-8 rounded-xl bg-blue-50 text-blue-500 flex items-center justify-center">
                                                         <i data-lucide="qr-code" class="w-4 h-4"></i>
                                                     </button>
-                                                    <button onclick="removeProduct('${item.upc}')" class="w-8 h-8 rounded-xl bg-red-50 text-red-500 flex items-center justify-center">
+                                                    <button onclick='removeProduct("${item.upc}")' class="w-8 h-8 rounded-xl bg-red-50 text-red-500 flex items-center justify-center">
                                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
                                                     </button>
                                                 </div>
@@ -499,7 +509,7 @@
                                     <input type="number" id="prod-threshold" placeholder="Low Stock Alert Threshold" value="${state.newProduct.threshold}" class="w-full px-4 py-3 border rounded-xl text-sm">
                                     <div class="flex gap-2">
                                         <button onclick="updateState('showAddProduct', false)" class="flex-1 py-3 rounded-xl bg-slate-200 text-slate-600 text-xs font-black uppercase">Cancel</button>
-                                        <button onclick="window.state = {user: window.state.user, inventory: window.state.inventory, view: window.state.view, scanMode: window.state.scanMode, scannedBatch: window.state.scannedBatch, showAddProduct: window.state.showAddProduct, newProduct: {name: document.getElementById('prod-name').value, upc: document.getElementById('prod-upc').value, threshold: document.getElementById('prod-threshold').value}, showQRModal: window.state.showQRModal, dateFilter: window.state.dateFilter, movements: window.state.movements, loading: window.state.loading}; addProduct();" class="flex-1 py-3 rounded-xl bg-blue-600 text-white text-xs font-black uppercase">Add</button>
+                                        <button onclick="addProduct()" class="flex-1 py-3 rounded-xl bg-blue-600 text-white text-xs font-black uppercase">Add</button>
                                     </div>
                                 </div>
                             </div>
