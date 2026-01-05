@@ -52,8 +52,8 @@
             box-shadow: 0 0 8px rgba(37, 99, 235, 0.8);
             animation: scan-line 2s linear infinite;
         }
-        .flash-success { background-color: rgba(34, 197, 94, 0.3); }
-        .flash-error { background-color: rgba(239, 68, 68, 0.3); }
+        .flash-success { background-color: rgba(34, 197, 94, 0.4); }
+        .flash-error { background-color: rgba(239, 68, 68, 0.4); }
 
         @media print {
             .no-print { display: none !important; }
@@ -122,7 +122,7 @@
             const [scannerFlash, setScannerFlash] = useState(null); 
             
             const scannerInstance = useRef(null);
-            const lastScanTime = useRef({}); 
+            const lastScanTimes = useRef({}); 
             const fb = window.FirebaseBridge;
 
             useEffect(() => {
@@ -164,10 +164,8 @@
                 return () => { unsubInv(); unsubMov(); };
             }, [user]);
 
-            const updateQty = async (id, delta, forcedInventory = null) => {
-                // Use the inventory state passed in or the current state
-                const currentInv = forcedInventory || inventory;
-                const item = currentInv[id];
+            const updateQty = async (id, delta, currentInventory, currentMovements) => {
+                const item = currentInventory[id];
                 if (!item) return false;
                 
                 const newQty = Math.max(0, (item.qty || 0) + delta);
@@ -177,7 +175,7 @@
 
                     if (delta < 0) {
                         const movDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyMovements', id);
-                        const currentCount = movements[id]?.count || 0;
+                        const currentCount = (currentMovements[id]?.count || 0);
                         await fb.setDoc(movDoc, { 
                             count: currentCount + Math.abs(delta),
                             name: item.name 
@@ -186,6 +184,43 @@
                     return true;
                 } catch (err) { 
                     return false; 
+                }
+            };
+
+            const handleScan = async (decodedText) => {
+                const code = decodedText.trim();
+                const now = Date.now();
+                const capturedMode = scanMode; // Capture current switch state immediately
+                
+                // Per-item debounce: Prevent the SAME product from scanning twice in 1.5s
+                // But allow different products to scan instantly
+                if (lastScanTimes.current[code] && (now - lastScanTimes.current[code] < 1500)) {
+                    return;
+                }
+                lastScanTimes.current[code] = now;
+
+                if (inventory[code]) {
+                    const delta = capturedMode === 'in' ? 1 : -1;
+                    
+                    // Visual feedback setup
+                    setLastScanned({ 
+                        id: code, 
+                        name: inventory[code].name, 
+                        mode: capturedMode 
+                    });
+                    setScannerFlash('success');
+                    if (window.navigator.vibrate) window.navigator.vibrate(50);
+
+                    // Perform update (pass current state refs to avoid closure staleness)
+                    await updateQty(code, delta, inventory, movements);
+                    
+                    // Clear flash after a short burst
+                    setTimeout(() => setScannerFlash(null), 400);
+                } else {
+                    setScannerFlash('error');
+                    setLastScanned({ id: code, name: "Unknown Tag", isNew: true });
+                    if (window.navigator.vibrate) window.navigator.vibrate([100, 50, 100]);
+                    setTimeout(() => setScannerFlash(null), 400);
                 }
             };
 
@@ -203,42 +238,6 @@
                 }
             };
 
-            const handleScan = async (decodedText) => {
-                const code = decodedText.trim();
-                const now = Date.now();
-                
-                // IMPORTANT: Capture the scanMode at the instant of scan to prevent race conditions
-                const capturedMode = scanMode;
-                
-                if (lastScanTime.current[code] && (now - lastScanTime.current[code] < 2000)) {
-                    return;
-                }
-                lastScanTime.current[code] = now;
-
-                if (inventory[code]) {
-                    const delta = capturedMode === 'in' ? 1 : -1;
-                    setLastScanned({ 
-                        id: code, 
-                        name: inventory[code].name, 
-                        mode: capturedMode 
-                    });
-                    
-                    const success = await updateQty(code, delta);
-                    
-                    if (success) {
-                        setScannerFlash('success');
-                        if (window.navigator.vibrate) window.navigator.vibrate([40, 30, 40]);
-                    } else {
-                        setScannerFlash('error');
-                    }
-                } else {
-                    setScannerFlash('error');
-                    setLastScanned({ id: code, name: "Unknown Tag", isNew: true });
-                }
-
-                setTimeout(() => setScannerFlash(null), 500);
-            };
-
             const startScanner = async () => {
                 setScannerActive(true);
                 setTimeout(() => {
@@ -247,12 +246,13 @@
                     html5QrCode.start(
                         { facingMode: "environment" },
                         { 
-                            fps: 15, 
+                            fps: 20, 
                             qrbox: { width: 250, height: 250 },
-                            aspectRatio: 1.0 
+                            aspectRatio: 1.0,
+                            disableFlip: true
                         },
                         handleScan,
-                        (e) => {}
+                        () => {}
                     ).catch(err => {
                         showToast("Camera access denied");
                         setScannerActive(false);
@@ -266,7 +266,6 @@
                     scannerInstance.current = null;
                 }
                 setScannerActive(false);
-                setView('inventory');
                 setLastScanned(null);
             };
 
@@ -282,7 +281,7 @@
                 const rows = Object.entries(inventory).map(([id, item]) => {
                     const saleCount = movements[id]?.count || 0;
                     return [
-                        `"${item.name}"`,
+                        `"${item.name.replace(/"/g, '""')}"`,
                         saleCount,
                         item.qty || 0,
                         `"${id}"`
@@ -463,8 +462,8 @@
                                                 </button>
                                             ) : (
                                                 <>
-                                                    <button onClick={() => updateQty(id, -1)} className="w-10 h-10 rounded-xl bg-slate-50 text-slate-400 flex items-center justify-center font-black">-</button>
-                                                    <button onClick={() => updateQty(id, 1)} className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black">+</button>
+                                                    <button onClick={() => updateQty(id, -1, inventory, movements)} className="w-10 h-10 rounded-xl bg-slate-50 text-slate-400 flex items-center justify-center font-black">-</button>
+                                                    <button onClick={() => updateQty(id, 1, inventory, movements)} className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black">+</button>
                                                 </>
                                             )}
                                         </div>
