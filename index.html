@@ -190,10 +190,8 @@
             const handleScan = async (decodedText) => {
                 const code = decodedText.trim();
                 const now = Date.now();
-                const capturedMode = scanMode; // Capture current switch state immediately
+                const capturedMode = scanMode; 
                 
-                // Per-item debounce: Prevent the SAME product from scanning twice in 1.5s
-                // But allow different products to scan instantly
                 if (lastScanTimes.current[code] && (now - lastScanTimes.current[code] < 1500)) {
                     return;
                 }
@@ -201,8 +199,6 @@
 
                 if (inventory[code]) {
                     const delta = capturedMode === 'in' ? 1 : -1;
-                    
-                    // Visual feedback setup
                     setLastScanned({ 
                         id: code, 
                         name: inventory[code].name, 
@@ -210,11 +206,7 @@
                     });
                     setScannerFlash('success');
                     if (window.navigator.vibrate) window.navigator.vibrate(50);
-
-                    // Perform update (pass current state refs to avoid closure staleness)
                     await updateQty(code, delta, inventory, movements);
-                    
-                    // Clear flash after a short burst
                     setTimeout(() => setScannerFlash(null), 400);
                 } else {
                     setScannerFlash('error');
@@ -225,7 +217,8 @@
             };
 
             const toggleView = async (target) => {
-                if (view === 'scanner' && target !== 'scanner') {
+                // If we are currently in the scanner view, we MUST stop it before changing state
+                if (view === 'scanner' || scannerActive) {
                     await stopScanner();
                 }
                 
@@ -240,7 +233,11 @@
 
             const startScanner = async () => {
                 setScannerActive(true);
+                // Wait for the DOM element #reader to be rendered
                 setTimeout(() => {
+                    const readerElem = document.getElementById("reader");
+                    if (!readerElem) return;
+                    
                     const html5QrCode = new Html5Qrcode("reader");
                     scannerInstance.current = html5QrCode;
                     html5QrCode.start(
@@ -262,7 +259,13 @@
 
             const stopScanner = async () => {
                 if (scannerInstance.current) {
-                    try { await scannerInstance.current.stop(); } catch (e) {}
+                    try {
+                        await scannerInstance.current.stop();
+                        // Important: clear the internal state of the scanner
+                        scannerInstance.current.clear();
+                    } catch (e) {
+                        console.error("Scanner stop error:", e);
+                    }
                     scannerInstance.current = null;
                 }
                 setScannerActive(false);
@@ -277,17 +280,10 @@
             const downloadCSV = () => {
                 const date = new Date().toISOString().split('T')[0];
                 const headers = ["Product Name", "Weekly Sales", "Current Stock", "Tag ID"];
-                
                 const rows = Object.entries(inventory).map(([id, item]) => {
                     const saleCount = movements[id]?.count || 0;
-                    return [
-                        `"${item.name.replace(/"/g, '""')}"`,
-                        saleCount,
-                        item.qty || 0,
-                        `"${id}"`
-                    ];
+                    return [`"${item.name.replace(/"/g, '""')}"`, saleCount, item.qty || 0, `"${id}"`];
                 });
-
                 const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                 const url = URL.createObjectURL(blob);
@@ -304,13 +300,9 @@
                 let body = `THE DAILY BYTE REPORT: ${date}\n\nWEEKLY SALES:\n`;
                 const sales = Object.values(movements).filter(m => m.count > 0);
                 if (sales.length === 0) body += "(No sales recorded)\n";
-                sales.forEach(m => {
-                    body += `- ${m.name}: ${m.count}\n`;
-                });
+                sales.forEach(m => { body += `- ${m.name}: ${m.count}\n`; });
                 body += `\nCURRENT STOCK LEVEL:\n`;
-                Object.values(inventory).forEach(item => {
-                    body += `- ${item.name}: ${item.qty}\n`;
-                });
+                Object.values(inventory).forEach(item => { body += `- ${item.name}: ${item.qty}\n`; });
                 window.location.href = `mailto:elaney.tedder@gmail.com?subject=Byte Report ${date}&body=${encodeURIComponent(body)}`;
             };
 
@@ -318,18 +310,11 @@
                 const upcInput = suggestedCode || prompt("Scan or Enter UPC / Code:");
                 if (!upcInput) return;
                 const upc = upcInput.trim();
-
-                if (inventory[upc]) {
-                    showToast("Item already exists!");
-                    return;
-                }
-
+                if (inventory[upc]) { showToast("Item already exists!"); return; }
                 const name = prompt("Product Name:");
                 if (!name) return;
-                
                 const thresholdInput = prompt(`Restock alert at what level?`, "5");
                 const threshold = parseInt(thresholdInput) || 5;
-
                 try {
                     await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', upc), {
                         name, qty: 0, threshold: threshold, createdAt: Date.now()
@@ -346,7 +331,7 @@
             return (
                 <div className="max-w-md mx-auto h-screen flex flex-col bg-slate-50 shadow-2xl relative overflow-hidden">
                     <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top flex justify-between items-center shrink-0 z-20 no-print">
-                        <div>
+                        <div onClick={() => toggleView('inventory')} className="cursor-pointer">
                             <h1 className="text-xl font-black italic uppercase">Byte <span className="text-blue-600">Admin</span></h1>
                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
                                 {view === 'inventory' ? (isManaging ? 'Managing Products' : 'Live Inventory') : view === 'audit' ? 'Report Center' : 'Tag Scanner'}
@@ -413,11 +398,7 @@
                                             <h3 className="font-black uppercase italic">Report Center</h3>
                                             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Performance Summary</p>
                                         </div>
-                                        <button 
-                                            onClick={downloadCSV}
-                                            className="bg-white/10 hover:bg-white/20 p-3 rounded-xl transition-colors"
-                                            title="Download CSV"
-                                        >
+                                        <button onClick={downloadCSV} className="bg-white/10 hover:bg-white/20 p-3 rounded-xl transition-colors">
                                             <i data-lucide="download" className="w-4 h-4"></i>
                                         </button>
                                     </div>
