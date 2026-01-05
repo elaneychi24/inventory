@@ -51,6 +51,10 @@
             box-shadow: 0 0 8px rgba(37, 99, 235, 0.8);
             animation: scan-line 2s linear infinite;
         }
+        @media print {
+            .no-print { display: none !important; }
+            .qr-container { break-inside: avoid; }
+        }
     </style>
 </head>
 <body>
@@ -110,15 +114,12 @@
             const [loading, setLoading] = useState(true);
             const [lastScanned, setLastScanned] = useState(null);
             const [scannerActive, setScannerActive] = useState(false);
+            const [showQRModal, setShowQRModal] = useState(false);
             
-            const scannerRef = useRef(null);
-            const scanModeRef = useRef('in');
+            const scannerInstance = useRef(null);
             const fb = window.FirebaseBridge;
 
-            useEffect(() => { scanModeRef.current = scanMode; }, [scanMode]);
-
             useEffect(() => {
-                if (!fb) return;
                 const initAuth = async () => {
                     try {
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -157,14 +158,10 @@
                 return () => { unsubInv(); unsubMov(); };
             }, [user]);
 
-            const updateQty = async (id, delta, explicitMode = null) => {
-                if (!user) return;
+            const updateQty = async (id, delta) => {
                 const item = inventory[id];
                 if (!item) return;
-
-                const mode = explicitMode || scanModeRef.current;
                 const newQty = Math.max(0, (item.qty || 0) + delta);
-                
                 try {
                     const itemDoc = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', id);
                     await fb.updateDoc(itemDoc, { qty: newQty });
@@ -186,8 +183,6 @@
                 if (!confirm(`Permanently remove ${inventory[id]?.name}?`)) return;
                 try {
                     await fb.deleteDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', id));
-                    // Optional: keep historical data or delete? 
-                    // await fb.deleteDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'weeklyMovements', id));
                     showToast("Product Removed");
                 } catch (err) { showToast("Error removing product"); }
             };
@@ -208,66 +203,37 @@
                 }
             };
 
-            const handleUnknownScan = (code) => {
-                // Pause scanner
-                stopScanner();
-                if(confirm(`New Item Detected: "${code}"\n\nAdd this to inventory?`)) {
-                    addNewItem(code);
-                } else {
-                    setView('scanner'); // Go back to scanning if they cancel
-                    setTimeout(startScanner, 500);
-                }
-            };
-
             const startScanner = async () => {
                 setView('scanner');
                 setScannerActive(true);
-                
-                setTimeout(async () => {
-                    if (scannerRef.current) return;
+                setTimeout(() => {
                     const html5QrCode = new Html5Qrcode("reader");
-                    scannerRef.current = html5QrCode;
-                    try {
-                        await html5QrCode.start(
-                            { facingMode: "environment" },
-                            { fps: 10, qrbox: 220, aspectRatio: 1.0 }, // Lowered FPS to help performance
-                            (decodedText) => {
-                                const code = decodedText.trim();
-                                // Case insensitive lookup
-                                const matchId = Object.keys(inventory).find(k => k.toLowerCase() === code.toLowerCase());
-
-                                if (matchId) {
-                                    setLastScanned({ id: matchId, name: inventory[matchId].name });
-                                    updateQty(matchId, scanModeRef.current === 'in' ? 1 : -1);
-                                    if (window.navigator.vibrate) window.navigator.vibrate([50]);
-                                    
-                                    // Brief pause to prevent rapid-fire
-                                    // html5QrCode.pause(); 
-                                    // setTimeout(() => html5QrCode.resume(), 1000);
-                                } else {
-                                    if (window.navigator.vibrate) window.navigator.vibrate([200]); // Long buzz for error
-                                    handleUnknownScan(code);
-                                }
-                            },
-                            (e) => {}
-                        );
-                    } catch (err) {
+                    scannerInstance.current = html5QrCode;
+                    html5QrCode.start(
+                        { facingMode: "environment" },
+                        { fps: 20, qrbox: 220, aspectRatio: 1.0 },
+                        (decodedText) => {
+                            const code = decodedText.trim();
+                            if (inventory[code]) {
+                                setLastScanned({ id: code, name: inventory[code].name });
+                                updateQty(code, scanMode === 'in' ? 1 : -1);
+                                if (window.navigator.vibrate) window.navigator.vibrate([50, 30, 50]);
+                            } else {
+                                setLastScanned({ id: code, name: "Unknown Tag", isNew: true });
+                            }
+                        },
+                        (e) => {}
+                    ).catch(err => {
                         showToast("Camera Error");
                         setScannerActive(false);
-                        setView('inventory');
-                    }
-                }, 100);
+                    });
+                }, 300);
             };
 
             const stopScanner = async () => {
-                if (scannerRef.current) {
-                    try {
-                        await scannerRef.current.stop();
-                        scannerRef.current = null;
-                    } catch (e) {
-                        console.error("Scanner Stop Error", e);
-                        scannerRef.current = null;
-                    }
+                if (scannerInstance.current) {
+                    try { await scannerInstance.current.stop(); } catch (e) {}
+                    scannerInstance.current = null;
                 }
                 setScannerActive(false);
                 setView('inventory');
@@ -293,10 +259,12 @@
             };
 
             const addNewItem = async (suggestedCode = null) => {
-                const upc = suggestedCode || prompt("Scan or Enter UPC / Code:");
-                if (!upc) return;
+                const upcInput = suggestedCode || prompt("Scan or Enter UPC / Code:");
+                if (!upcInput) return;
                 
-                // Check if exists
+                // Sanitize ID (remove spaces)
+                const upc = upcInput.trim();
+
                 if (inventory[upc]) {
                     showToast("Item already exists!");
                     return;
@@ -305,8 +273,8 @@
                 const name = prompt("Product Name:");
                 if (!name) return;
                 
-                const thresholdStr = prompt(`Low Stock Alert Level for ${name}?`, "5");
-                const threshold = parseInt(thresholdStr) || 5;
+                const thresholdInput = prompt(`At what stock level should we alert you to restock ${name}?`, "5");
+                const threshold = parseInt(thresholdInput) || 5;
 
                 try {
                     await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'inventory', upc), {
@@ -314,23 +282,19 @@
                     });
                     showToast(`Created ${name}`);
                     if (view === 'scanner') {
-                        // Restart scanner logic if we came from there
                         setLastScanned({ id: upc, name: name });
-                        setView('scanner'); // Ensure we stay on scanner
-                        // Re-init scanner if it was stopped by the alert
-                        if (!scannerRef.current) startScanner(); 
+                        if (!scannerInstance.current) startScanner(); 
                     }
                 } catch (err) { showToast("Save Error"); }
             };
 
-            useEffect(() => { lucide.createIcons(); }, [view, inventory, movements, scannerActive, isManaging]);
+            useEffect(() => { lucide.createIcons(); }, [view, inventory, movements, scannerActive, isManaging, showQRModal]);
 
             if (loading) return <div className="h-screen flex items-center justify-center bg-slate-50"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>;
 
             return (
                 <div className="max-w-md mx-auto h-screen flex flex-col bg-slate-50 shadow-2xl relative overflow-hidden">
-                    {/* Header */}
-                    <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top flex justify-between items-center shrink-0 z-20">
+                    <header className="bg-white px-6 py-4 border-b border-slate-100 safe-top flex justify-between items-center shrink-0 z-20 no-print">
                         <div>
                             <h1 className="text-xl font-black italic uppercase">Byte <span className="text-blue-600">Admin</span></h1>
                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
@@ -361,8 +325,7 @@
                         </div>
                     </header>
 
-                    {/* Content Area */}
-                    <main className="flex-1 overflow-y-auto p-4 pb-32">
+                    <main className="flex-1 overflow-y-auto p-4 pb-32 no-print">
                         {view === 'scanner' && (
                             <div className="space-y-4 animate-in fade-in duration-300">
                                 <div className="flex bg-slate-200 p-1 rounded-2xl">
@@ -434,16 +397,24 @@
                         )}
                     </main>
 
-                    {/* Global Footer Actions */}
-                    <div className="absolute bottom-0 left-0 right-0 p-4 bg-white/80 backdrop-blur-md border-t border-slate-100 safe-bottom z-30">
+                    <div className="absolute bottom-0 left-0 right-0 p-4 bg-white/80 backdrop-blur-md border-t border-slate-100 safe-bottom z-30 no-print">
                         {view === 'inventory' ? (
-                            <button 
-                                onClick={() => addNewItem()}
-                                className="w-full bg-slate-900 text-white font-black text-xs uppercase tracking-widest py-5 rounded-full shadow-lg flex items-center justify-center"
-                            >
-                                <i data-lucide="plus" className="w-4 h-4 mr-2"></i>
-                                Add New Product
-                            </button>
+                            <div className="grid grid-cols-2 gap-3">
+                                <button 
+                                    onClick={() => setShowQRModal(true)}
+                                    className="w-full bg-slate-100 text-slate-600 font-black text-xs uppercase tracking-widest py-5 rounded-full shadow-sm flex items-center justify-center"
+                                >
+                                    <i data-lucide="qr-code" className="w-4 h-4 mr-2"></i>
+                                    Labels
+                                </button>
+                                <button 
+                                    onClick={() => addNewItem()}
+                                    className="w-full bg-slate-900 text-white font-black text-xs uppercase tracking-widest py-5 rounded-full shadow-lg flex items-center justify-center"
+                                >
+                                    <i data-lucide="plus" className="w-4 h-4 mr-2"></i>
+                                    Add New
+                                </button>
+                            </div>
                         ) : (
                             <button 
                                 onClick={emailReport}
@@ -456,8 +427,37 @@
                     </div>
 
                     {toast && (
-                        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl z-50 animate-in fade-in zoom-in slide-in-from-bottom-2">
+                        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl z-50 animate-in fade-in zoom-in slide-in-from-bottom-2 no-print">
                             {toast}
+                        </div>
+                    )}
+
+                    {showQRModal && (
+                        <div className="fixed inset-0 bg-black/95 z-[100] flex flex-col p-6 overflow-y-auto">
+                            <div className="bg-white rounded-[40px] p-8 w-full max-w-sm mx-auto my-auto shadow-2xl relative">
+                                <div className="flex justify-between items-center mb-6 no-print">
+                                    <h2 className="font-black uppercase italic text-sm">QR Labels</h2>
+                                    <button onClick={() => setShowQRModal(false)} className="text-slate-400 p-2">✕</button>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4 mb-8 overflow-y-auto max-h-[50vh] p-2">
+                                    {Object.entries(inventory).map(([id, item]) => (
+                                        <div key={id} className="flex flex-col items-center p-3 border border-slate-100 rounded-[20px] bg-slate-50 qr-container">
+                                            <img 
+                                                src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(id)}`} 
+                                                className="w-20 h-20 mb-2" 
+                                                alt={item.name}
+                                            />
+                                            <p className="text-[8px] font-black uppercase text-center truncate w-full">{item.name}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                                <button 
+                                    onClick={() => window.print()} 
+                                    className="w-full bg-slate-900 text-white py-4 rounded-[20px] font-black uppercase text-[10px] tracking-widest shadow-xl no-print"
+                                >
+                                    Print Labels
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>
